@@ -4,6 +4,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import * as E from './engine.js';
+import * as C from './cpu.js';
 
 test('盤面: 19マス・54頂点・72辺・地形の枚数・数字の分布', () => {
   const g = E.createGame(4, Math.random);
@@ -586,4 +587,62 @@ test('発展カード: クリーンアップを3枚使うと最もクリーン�
   for (let i = 0; i < 4; i++) playOneCleanup(other);
   assert.equal(g.players[other].cleanupPlayed, 4);
   assert.equal(g.cleanestPlayer, other); // 4枚 > 3枚で移る
+});
+
+// ---- CPU（作業4）: すべての場面で合法な手を返し、vpかbagで必ず終わる ----
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function rng() {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+// CPUだけで1局を最後まで進める。止まり（同じ手が何度も不発）を防ぐため上限手数で打ち切り、到達できたか返す
+function playOneCpuGame(playerCount, levelFor, seed) {
+  const rng = mulberry32(seed);
+  const g = E.createGame(playerCount, rng);
+  const MAX_STEPS = 20000;
+  let steps = 0;
+  while (g.phase !== 'gameOver' && steps < MAX_STEPS) {
+    C.step(g, levelFor);
+    steps++;
+  }
+  return { g, steps };
+}
+
+test('CPU: 3人・4人、強さいろいろで何局も最後まで進み、vpかbagで終わる（例外・止まりなし）', () => {
+  const levelSets = [
+    () => 'weak', () => 'normal', () => 'strong',
+    (i) => ['weak', 'normal', 'strong', 'weak'][i % 4],
+    (i) => ['strong', 'weak', 'strong'][i % 3],
+  ];
+  const counts = { vp: 0, bag: 0 };
+  let totalTurns = 0, games = 0;
+  for (let pc = 3; pc <= 4; pc++) {
+    for (let s = 0; s < 8; s++) {
+      const levelFor = levelSets[s % levelSets.length];
+      const { g, steps } = playOneCpuGame(pc, levelFor, pc * 1000 + s);
+      assert.equal(g.phase, 'gameOver', `pc=${pc} seed=${s} が${steps}手で終わらなかった`);
+      assert.ok(g.endReason === 'vp' || g.endReason === 'bag');
+      assert.ok(Array.isArray(g.winners));
+      counts[g.endReason]++;
+      totalTurns += g.turnNumber;
+      games++;
+    }
+  }
+  assert.equal(games, 16);
+  console.log(`  CPUだけ${games}局: vp終了${counts.vp}・bag終了${counts.bag}、平均${Math.round(totalTurns / games)}手番`);
+});
+
+test('CPU: つよいはよわいに勝ち越す', () => {
+  // 袋切れ(bag)の終わりも「再生>化石」を満たした人の勝ちなので、vp・bagどちらの勝ちも数える
+  let strongWins = 0, weakWins = 0;
+  for (let s = 0; s < 20; s++) {
+    const levelFor = (i) => (i % 2 === 0 ? 'strong' : 'weak'); // 0,2=つよい　1,3=よわい
+    const { g } = playOneCpuGame(4, levelFor, 5000 + s);
+    g.winners.forEach((w) => { if (w % 2 === 0) strongWins++; else weakWins++; });
+  }
+  assert.ok(strongWins > weakWins, `つよい${strongWins}勝 よわい${weakWins}勝`);
 });
