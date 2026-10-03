@@ -731,8 +731,8 @@ test('CPU: ふつう・つよいの4人対局は町・都市がよく建ち、�
   const avgMaxScore = maxScoreSum / games;
   console.log(`  ふつう/つよい${games}局: vp終了${counts.vp}・bag終了${counts.bag}、平均${Math.round(totalTurns / games)}手番、終局時の最高点の平均${avgMaxScore.toFixed(2)}`);
   assert.ok(counts.vp > 0, 'vpで終わる対局が一局も無い');
-  // 直す前は全員3点のまま(平均3)で止まっていた。6台後半まで伸びれば明らかな改善とみなす(seedにより6.5〜7台で揺れる)
-  assert.ok(avgMaxScore >= 6, `終局時の最高点の平均が低い(${avgMaxScore.toFixed(2)})`);
+  // 直す前は全員3点のまま(平均3)で止まっていた。7台まで伸びれば明らかな改善とみなす(seedにより7〜8台で揺れる)
+  assert.ok(avgMaxScore >= 7, `終局時の最高点の平均が低い(${avgMaxScore.toFixed(2)})`);
 });
 
 test('CPU: つよいはよわいに勝ち越す', () => {

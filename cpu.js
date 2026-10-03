@@ -114,13 +114,16 @@ function pickTargetCost(game, idx) {
   if (p.cities.length < E.MAX_CITIES && p.towns.length) return E.COSTS.city;
   if (p.towns.length < E.MAX_TOWNS && E.availableTownVertices(game, idx, false).length) return E.COSTS.town;
   if (p.roads.length < E.MAX_ROADS && E.availableRoadEdges(game, idx).length) return E.COSTS.road;
+  // 町・都市・道がもう建てられないときは、再生可能発電所(科学3)を次の目標にする
+  if (findPlantSpot(game, idx, 'renewable')) return E.PLANT_COSTS.renewable;
   return null;
 }
+function haveOf(p, r) { return r === 'science' ? (p.science || 0) : (p.resources[r] || 0); }
 function tryHelpfulBankTrade(game, idx) {
   const p = game.players[idx];
   const cost = pickTargetCost(game, idx);
   if (!cost) return false;
-  const missing = Object.entries(cost).filter(([r, n]) => (p.resources[r] || 0) < n).map(([r]) => r);
+  const missing = Object.entries(cost).filter(([r, n]) => haveOf(p, r) < n).map(([r]) => r);
   if (!missing.length) return false;
   const want = missing[0];
   // 科学は都市・再生可能発電所のために残す（町・都市・道を建てるためだけには使わない）
@@ -346,12 +349,15 @@ function greedyMainStep(game, idx, level) {
   if (tryHelpfulBankTrade(game, idx)) return true;
   if (tryHelpfulEnergyTrade(game, idx)) return true;
   if (!game.plantBuiltThisTurn) {
-    // 化石は再生可能より多く建てすぎない（GFが上がりすぎて自分も損をする）。再生可能はいつでも歓迎
+    // 発電所は点にならず、化石はGF(＝袋を引く枚数)を上げて局を縮める一方。再生可能はGFを下げるうえ
+    // 袋切れの勝ち条件(再生>化石)にも効くので、常に再生可能を優先する。化石は最初の1つ(エネルギー源の確保)
+    // だけ、再生可能がまだ無く科学が足りないときの繋ぎとして建てる
     const fossilCount = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'fossil').length;
     const renewCount = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'renewable').length;
-    const order = (level === 'strong' || fossilCount >= renewCount) ? ['renewable', 'fossil'] : ['fossil', 'renewable'];
+    const order = (renewCount === 0 && fossilCount === 0 && !canAffordScience(p, E.PLANT_COSTS.renewable))
+      ? ['fossil', 'renewable'] : ['renewable', 'fossil'];
     for (const kind of order) {
-      if (kind === 'fossil' && fossilCount > renewCount) continue;
+      if (kind === 'fossil' && (fossilCount > 0 || renewCount > 0)) continue; // 化石は繋ぎの1つだけ
       if (!canAffordScience(p, E.PLANT_COSTS[kind])) continue;
       const spot = findPlantSpot(game, idx, kind);
       if (spot && E.buildPlant(game, spot.vertexId, spot.hexId, kind)) return true;
