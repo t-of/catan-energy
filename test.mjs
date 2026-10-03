@@ -159,3 +159,149 @@ test('勝利判定: 他人の手番中に10点になっても勝たず、本人�
   assert.equal(g.winner, 1);
   assert.equal(g.phase, 'gameOver');
 });
+
+// ---- 作業2: 発電所・エネルギー・汚染（LF・GF）・ハザード ----
+
+test('発電所: 町は1つ・都市は3つまで、同じ（交点,地形）の組には2つ目を置けない、1手番に2つ目は不可', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  p.science = 30;
+  const townV = p.towns[0];
+  const townHex = g.board.vertices[townV].hexIds.find((hId) => g.board.hexes[hId].number != null);
+  assert.ok(E.buildPlant(g, townV, townHex, 'fossil'));
+  assert.equal(g.plantBuiltThisTurn, true);
+  // 同じ手番にもう1つは不可（別の町・都市でも）
+  const cityV = p.cities[0];
+  const cityHex = g.board.vertices[cityV].hexIds.find((hId) => g.board.hexes[hId].number != null);
+  assert.equal(E.buildPlant(g, cityV, cityHex, 'renewable'), false);
+  g.plantBuiltThisTurn = false; // 次の手番とみなす
+  // 町にはもう置けない（1つまで）
+  assert.equal(E.canBuildPlant(g, idx, townV, townHex, 'renewable'), false);
+  // 都市: 同じ組には2つ目を置けないが、別の地形には置ける
+  assert.ok(E.buildPlant(g, cityV, cityHex, 'fossil'));
+  g.plantBuiltThisTurn = false;
+  assert.equal(E.canBuildPlant(g, idx, cityV, cityHex, 'renewable'), false);
+  const otherCityHex = g.board.vertices[cityV].hexIds.find((hId) => hId !== cityHex && g.board.hexes[hId].number != null);
+  if (otherCityHex != null) assert.ok(E.buildPlant(g, cityV, otherCityHex, 'renewable'));
+});
+
+test('発電所: 都市でも4つ目は置けない（上限3）、化石6・再生9の持ち駒を超えられない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  const cityV = g.players[idx].cities[0];
+  const hexId = g.board.vertices[cityV].hexIds.find((hId) => g.board.hexes[hId].number != null);
+  for (let i = 0; i < 3; i++) g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: cityV, hexId: -1 - i });
+  assert.equal(E.canBuildPlant(g, idx, cityV, hexId, 'renewable'), false);
+  g.board.plants = [];
+  for (let i = 0; i < E.MAX_FOSSIL; i++) g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: -1, hexId: -1 - i });
+  assert.equal(E.canBuildPlant(g, idx, cityV, hexId, 'fossil'), false);
+  assert.equal(E.canBuildPlant(g, idx, cityV, hexId, 'renewable'), true);
+});
+
+test('エネルギー: 発電所の産出で増え、上限5で止まる。使い道3つ（資源/科学・ハザード除去・化石を壊す）', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  const cityV = p.cities[0];
+  const hexId = g.board.vertices[cityV].hexIds.find((hId) => g.board.hexes[hId].number != null);
+  const number = g.board.hexes[hexId].number;
+  p.science = 10;
+  g.phase = 'main';
+  assert.ok(E.buildPlant(g, cityV, hexId, 'fossil'));
+  g.plantBuiltThisTurn = false;
+  p.energy = 4;
+  g.phase = 'roll';
+  E.rollDice(g, fixedDiceRng(number));
+  assert.equal(p.energy, E.ENERGY_MAX); // 4+1だが上限5で止まる
+  g.phase = 'main';
+  // 使い道1: エネルギー2 → 資源か科学1
+  const steelBefore = p.resources.steel;
+  assert.ok(E.useEnergyForResource(g, idx, 'steel'));
+  assert.equal(p.resources.steel, steelBefore + 1);
+  assert.equal(p.energy, E.ENERGY_MAX - E.ENERGY_TRADE_COST);
+  // 使い道3: エネルギー1 → 自分の化石燃料発電所を壊す（1手番1回）
+  const plantIndex = g.board.plants.findIndex((pl) => pl.owner === idx && pl.kind === 'fossil');
+  assert.ok(E.demolishFossilPlant(g, idx, plantIndex));
+  assert.equal(g.board.plants.some((pl) => pl.owner === idx && pl.kind === 'fossil'), false);
+  assert.equal(g.demolishedThisTurn, true);
+  // もう1つ化石があっても1手番1回まで
+  g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: cityV, hexId });
+  assert.equal(E.demolishFossilPlant(g, idx, g.board.plants.length - 1), false);
+});
+
+test('ハザード: 地形・建物の産出を止め、その出目のあと外れる。監査官が止めた地形に接する建物のハザードは外れない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  const townV = p.towns[0];
+  // 自分のほかの建物が同じ数字の地形にも接していると、そちらは産出してしまい比較できないので避ける
+  const otherVertices = [...p.towns.filter((v) => v !== townV), ...p.cities];
+  const otherNumbers = new Set(otherVertices.flatMap((v) => g.board.vertices[v].hexIds.map((h) => g.board.hexes[h].number)));
+  const hex = g.board.vertices[townV].hexIds.map((h) => g.board.hexes[h]).find((h) => h.number != null && !otherNumbers.has(h.number));
+  if (!hex) return; // 全部かぶっていたら（稀）スキップ
+  // 建物にハザード: その出目で何ももらえない
+  assert.ok(E.placeHazardOnVertex(g, townV));
+  g.phase = 'roll';
+  const before = { res: JSON.parse(JSON.stringify(p.resources)), energy: p.energy };
+  E.rollDice(g, fixedDiceRng(hex.number));
+  assert.deepEqual(p.resources, before.res); // もらえない
+  assert.equal(E.vertexHasHazard(g, townV), false); // 出目のあと外れる
+
+  // 監査官をその地形へ動かすと、接する建物のハザードは外れない
+  g.phase = 'main';
+  assert.ok(E.placeHazardOnVertex(g, townV));
+  g.inspectorHex = hex.id;
+  g.phase = 'roll';
+  E.rollDice(g, fixedDiceRng(hex.number)); // 監査官の地形は産出もなく、ハザードも外れない
+  assert.equal(E.vertexHasHazard(g, townV), true);
+});
+
+test('汚染(LF・GF): 町+2x都市+化石-再生、合計をトラックの範囲に収める', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  const base = E.localFootprint(g, idx);
+  assert.equal(base, p.towns.length + p.cities.length * 2);
+  const cityV = p.cities[0];
+  const hexId = g.board.vertices[cityV].hexIds.find((hId) => g.board.hexes[hId].number != null);
+  g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: cityV, hexId });
+  assert.equal(E.localFootprint(g, idx), base + 1);
+  g.board.plants.push({ owner: idx, kind: 'renewable', vertexId: cityV, hexId: -1 });
+  assert.equal(E.localFootprint(g, idx), base); // 化石+1・再生-1で元に戻る
+  const gf = E.globalFootprint(g);
+  assert.ok(gf >= 0 && gf <= E.GF_RANGE[4]);
+  assert.ok(E.drawsFor(g) >= 1);
+});
+
+test('倉庫: 建てると7のときの捨て札の上限が8→11枚になる。壊す・捨てるの操作自体は1回だけ', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  g.phase = 'main';
+  p.energy = 2;
+  assert.ok(E.buildWarehouse(g));
+  assert.equal(p.warehouse, true);
+  assert.equal(p.energy, 0);
+  assert.equal(E.buildWarehouse(g), false); // 1回だけ
+  // 10枚(科学込み)は捨てない。11枚以上で捨てる
+  p.resources = { lumber: 10, brick: 0, fiber: 0, food: 0, steel: 0 };
+  p.science = 0;
+  g.phase = 'roll';
+  E.rollDice(g, fixedDiceRng(7));
+  assert.equal(g.phase, 'moveInspector'); // 10枚なので捨てずに次へ
+  p.resources.lumber = 11;
+  g.phase = 'roll';
+  E.rollDice(g, fixedDiceRng(7));
+  const pending = g.pendingDiscards.find((d) => d.player === idx);
+  assert.ok(pending);
+  assert.equal(pending.count, 5); // 11枚の半分(切り捨て)
+});

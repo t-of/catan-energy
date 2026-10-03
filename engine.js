@@ -26,6 +26,18 @@ export const COSTS = {
   dev: { food: 1, fiber: 1, steel: 1 },
 };
 export const MAX_ROADS = 12, MAX_TOWNS = 5, MAX_CITIES = 4;
+export const PLANT_COSTS = { fossil: { science: 1 }, renewable: { science: 3 } };
+export const MAX_FOSSIL = 6, MAX_RENEWABLE = 9;
+export const ENERGY_MAX = 5;
+export const ENERGY_TRADE_COST = 2; // エネルギー2 → 資源か科学1
+export const ENERGY_DEMOLISH_COST = 1; // エネルギー1 → 自分の化石燃料発電所を1つ壊す
+export const WAREHOUSE_ENERGY_COST = 2;
+export const HAZARD_SUPPLY = 10;
+export const GF_RANGE = { 3: 21, 4: 28 }; // トラックの上限（0章A。3人側は未確定の仮値）
+export const DRAW_TABLE = { // [下限, 上限, 引く枚数]（0章A）
+  4: [[0, 5, 2], [6, 18, 1], [19, 23, 2], [24, 28, 3]],
+  3: [[0, 5, 2], [6, 13, 1], [14, 17, 2], [18, 21, 3]],
+};
 
 export const DEV_COUNTS = { roadBuilding: 2, highYield: 2, researchGrant: 2, vp: 5, cleanup: 14 }; // 合計25
 export const DEV_LABEL = { roadBuilding: '道路建設', highYield: '豊作', researchGrant: '研究補助金', vp: '勝利点', cleanup: 'クリーンアップ' };
@@ -194,10 +206,13 @@ export function createGame(playerCount, rng = Math.random, options = {}) {
     color: PLAYER_COLORS[i],
     resources: emptyResources(),
     science: 0,
+    energy: 0,
+    warehouse: false,
     devCards: [], // { type, boughtTurn }
     roads: [], towns: [], cities: [],
     roadLength: 0,
   }));
+  board.plants = []; // { owner, kind:'fossil'|'renewable', vertexId, hexId }
   const setupOrder = Array.from({ length: playerCount }, (_, i) => i); // 1周目は順に。2周目は逆順にする
   return {
     rulesVersion: 2, // 古い保存（エネルギー版「風」の試作）を見分ける
@@ -218,7 +233,10 @@ export function createGame(playerCount, rng = Math.random, options = {}) {
     turnNumber: 1,
     diceLast: null,
     devCardPlayedThisTurn: false,
+    plantBuiltThisTurn: false, // 化石+再生で1手番1つ（イベントで建てる分は数えない）
+    demolishedThisTurn: false, // 化石を壊すのは1手番1回
     inspectorHex: board.inspectorHex,
+    hazards: { hexes: [], vertices: [] }, // 地形id・交点idの配列。在庫は HAZARD_SUPPLY
     pendingDiscards: [], // [{ player, count }]
     longestRoadPlayer: null,
     winner: null,
@@ -234,6 +252,71 @@ export function currentPlayer(game) {
 function log(game, text) { game.log.push(text); if (game.log.length > 200) game.log.shift(); }
 export function playerName(game, idx) { return (game.players[idx] && game.players[idx].name) || `プレイヤー${idx + 1}`; }
 function fire(game, evt) { game.events.push(evt); }
+
+// ---- 汚染（LF・GF） ----
+export function localFootprint(game, idx) {
+  const p = game.players[idx];
+  const fossil = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'fossil').length;
+  const renewable = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'renewable').length;
+  return p.towns.length + p.cities.length * 2 + fossil - renewable;
+}
+export function globalFootprint(game) {
+  const sum = game.players.reduce((a, _, i) => a + localFootprint(game, i), 0);
+  const max = GF_RANGE[game.playerCount] || GF_RANGE[4];
+  return Math.max(0, Math.min(max, sum));
+}
+export function drawsFor(game) {
+  const gf = globalFootprint(game);
+  const table = DRAW_TABLE[game.playerCount] || DRAW_TABLE[4];
+  const row = table.find(([lo, hi]) => gf >= lo && gf <= hi) || table[table.length - 1];
+  return row[2];
+}
+
+// ---- ハザード（町・都市・地形に1つまで。監査官のいる地形には置けない） ----
+function hazardCount(game) { return game.hazards.hexes.length + game.hazards.vertices.length; }
+export function canPlaceHazard(game) { return hazardCount(game) < HAZARD_SUPPLY; }
+export function hexHasHazard(game, hexId) { return game.hazards.hexes.includes(hexId); }
+export function vertexHasHazard(game, vertexId) { return game.hazards.vertices.includes(vertexId); }
+function hexBlocked(game, hexId) { return hexId === game.inspectorHex || hexHasHazard(game, hexId); }
+export function placeHazardOnHex(game, hexId) {
+  if (hexId === game.inspectorHex || hexHasHazard(game, hexId) || !canPlaceHazard(game)) return false;
+  game.hazards.hexes.push(hexId);
+  fire(game, 'hazard');
+  return true;
+}
+export function placeHazardOnVertex(game, vertexId) {
+  const v = game.board.vertices[vertexId];
+  if (!v.building || vertexHasHazard(game, vertexId) || !canPlaceHazard(game)) return false;
+  game.hazards.vertices.push(vertexId);
+  fire(game, 'hazard');
+  return true;
+}
+// 出目の地形にあるハザードは外れ、その地形（監査官がいないもの）に接する町・都市のハザードも外れる（7では呼ばない）
+function clearHazardsForRoll(game, total) {
+  game.board.hexes.forEach((hex) => {
+    if (hex.number !== total) return;
+    game.hazards.hexes = game.hazards.hexes.filter((h) => h !== hex.id);
+    if (hex.id === game.inspectorHex) return; // 監査官が止めた地形に接する建物のハザードは外れない
+    game.hazards.vertices = game.hazards.vertices.filter((v) => !hex.vertexIds.includes(v));
+  });
+}
+export function useEnergyToClearHazard(game, playerIdx, target) {
+  if (game.phase !== 'main' || playerIdx !== currentPlayer(game)) return false;
+  const p = game.players[playerIdx];
+  if (p.energy < ENERGY_DEMOLISH_COST) return false;
+  let cleared = false;
+  if (target && target.hexId != null && hexHasHazard(game, target.hexId)) {
+    game.hazards.hexes = game.hazards.hexes.filter((h) => h !== target.hexId);
+    cleared = true;
+  } else if (target && target.vertexId != null && vertexHasHazard(game, target.vertexId)) {
+    game.hazards.vertices = game.hazards.vertices.filter((v) => v !== target.vertexId);
+    cleared = true;
+  }
+  if (!cleared) return false;
+  p.energy -= ENERGY_DEMOLISH_COST;
+  fire(game, 'hazard');
+  return true;
+}
 
 // ---- 得点・勝ち判定 ----
 export function devVpCount(player) { return player.devCards.filter((c) => c.type === 'vp').length; }
@@ -322,22 +405,27 @@ export function setupPlaceRoad(game, edgeId) {
   return true;
 }
 
-// ---- 資源・科学の産出 ----
+// ---- 資源・科学・エネルギーの産出 ----
 function distributeResources(game, total) {
   const demand = emptyResources();
   const contributions = [];
   let scienceDemand = 0;
   const scienceContribs = [];
+  const energyGains = {}; // playerIdx -> 個数
   game.board.hexes.forEach((hex) => {
-    if (hex.number !== total || hex.id === game.inspectorHex) return;
+    if (hex.number !== total || hexBlocked(game, hex.id)) return;
     const res = TERRAIN_RESOURCE[hex.terrain];
     if (!res) return;
     hex.vertexIds.forEach((vid) => {
       const v = game.board.vertices[vid];
       if (!v.building) return;
+      if (vertexHasHazard(game, vid)) return; // ハザードのある町・都市は資源・科学・エネルギーを何ももらえない
       contributions.push({ player: v.building.owner, res, amt: 1 });
       demand[res] += 1;
       if (v.building.type === 'city') { scienceContribs.push({ player: v.building.owner }); scienceDemand += 1; }
+      game.board.plants
+        .filter((pl) => pl.hexId === hex.id && pl.vertexId === vid)
+        .forEach((pl) => { energyGains[pl.owner] = (energyGains[pl.owner] || 0) + 1; });
     });
   });
   RESOURCES.forEach((res) => {
@@ -369,6 +457,12 @@ function distributeResources(game, total) {
       game.bank.science -= scienceDemand;
     }
   }
+  Object.entries(energyGains).forEach(([pid, n]) => {
+    const pl = game.players[pid];
+    const before = pl.energy;
+    pl.energy = Math.min(ENERGY_MAX, pl.energy + n);
+    if (pl.energy > before) fire(game, 'energy');
+  });
 }
 // 出目で産出するタイルの id（盤の演出用）
 export function hitHexIds(game, total) {
@@ -395,6 +489,7 @@ export function rollDice(game, rng = Math.random) {
     game.phase = game.pendingDiscards.length ? 'discard' : 'moveInspector';
   } else {
     distributeResources(game, total);
+    clearHazardsForRoll(game, total); // 産出の終わりに、この出目で止まった地形・建物のハザードを外す
     game.phase = 'main';
   }
   return total;
@@ -548,6 +643,76 @@ export function buildCity(game, vertexId) {
   checkWin(game, idx);
   return true;
 }
+// ---- 発電所（町=1つ・都市=3つまで、それぞれ別の地形。化石+再生で1手番1つ） ----
+function plantsOnVertex(game, vertexId) { return game.board.plants.filter((p) => p.vertexId === vertexId); }
+function plantsOwnedCount(game, playerIdx, kind) { return game.board.plants.filter((p) => p.owner === playerIdx && p.kind === kind).length; }
+export function canBuildPlant(game, playerIdx, vertexId, hexId, kind) {
+  if (game.plantBuiltThisTurn) return false;
+  const v = game.board.vertices[vertexId];
+  if (!v.building || v.building.owner !== playerIdx) return false;
+  const hex = game.board.hexes[hexId];
+  if (!hex || hex.number == null || !v.hexIds.includes(hexId)) return false; // 砂漠不可・隣接していない地形は不可
+  const existing = plantsOnVertex(game, vertexId);
+  if (existing.some((p) => p.hexId === hexId)) return false; // 同じ（交点,地形）の組には2つ目を置けない
+  const limit = v.building.type === 'city' ? 3 : 1;
+  if (existing.length >= limit) return false;
+  if (kind === 'fossil' && plantsOwnedCount(game, playerIdx, 'fossil') >= MAX_FOSSIL) return false;
+  if (kind === 'renewable' && plantsOwnedCount(game, playerIdx, 'renewable') >= MAX_RENEWABLE) return false;
+  return true;
+}
+export function buildPlant(game, vertexId, hexId, kind) {
+  if (!canBuildNow(game)) return false;
+  const idx = currentPlayer(game);
+  if (!canBuildPlant(game, idx, vertexId, hexId, kind)) return false;
+  const p = game.players[idx];
+  const cost = PLANT_COSTS[kind];
+  if ((p.science || 0) < cost.science) return false;
+  p.science -= cost.science;
+  game.bank.science += cost.science;
+  game.board.plants.push({ owner: idx, kind, vertexId, hexId });
+  game.plantBuiltThisTurn = true;
+  fire(game, 'build');
+  return true;
+}
+
+// ---- 倉庫（エネルギー2、1回だけ。7のときの捨て札の上限が8→11枚） ----
+export function buildWarehouse(game) {
+  if (!canBuildNow(game)) return false;
+  const idx = currentPlayer(game);
+  const p = game.players[idx];
+  if (p.warehouse || p.energy < WAREHOUSE_ENERGY_COST) return false;
+  p.energy -= WAREHOUSE_ENERGY_COST;
+  p.warehouse = true;
+  fire(game, 'build');
+  return true;
+}
+
+// ---- エネルギーの使い道（倉庫以外の2つ。壊すのは建設コストの要らないハザード除去と同じ節にまとめる） ----
+export function useEnergyForResource(game, playerIdx, kind) {
+  if (game.phase !== 'main' || playerIdx !== currentPlayer(game)) return false;
+  if (kind !== 'science' && !RESOURCES.includes(kind)) return false;
+  const p = game.players[playerIdx];
+  if (p.energy < ENERGY_TRADE_COST) return false;
+  const bankHas = kind === 'science' ? game.bank.science : game.bank.resources[kind];
+  if ((bankHas || 0) < 1) return false;
+  p.energy -= ENERGY_TRADE_COST;
+  if (kind === 'science') { game.bank.science--; p.science++; } else { game.bank.resources[kind]--; p.resources[kind]++; }
+  fire(game, 'build');
+  return true;
+}
+export function demolishFossilPlant(game, playerIdx, plantIndex) {
+  if (game.phase !== 'main' || playerIdx !== currentPlayer(game) || game.demolishedThisTurn) return false;
+  const p = game.players[playerIdx];
+  if (p.energy < ENERGY_DEMOLISH_COST) return false;
+  const plant = game.board.plants[plantIndex];
+  if (!plant || plant.owner !== playerIdx || plant.kind !== 'fossil') return false;
+  p.energy -= ENERGY_DEMOLISH_COST;
+  game.board.plants.splice(plantIndex, 1);
+  game.demolishedThisTurn = true;
+  fire(game, 'build');
+  return true;
+}
+
 export function buyDevCard(game) {
   if (!canBuildNow(game)) return false;
   const idx = currentPlayer(game);
@@ -588,6 +753,8 @@ export function endTurn(game) {
   game.turnNumber++;
   game.phase = 'roll';
   game.devCardPlayedThisTurn = false;
+  game.plantBuiltThisTurn = false;
+  game.demolishedThisTurn = false;
   checkWin(game, game.turn); // 手番の初めの判定
   return true;
 }
