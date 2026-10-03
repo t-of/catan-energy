@@ -184,6 +184,7 @@ test('相手との交易: 資源・科学・エネルギーを自由に組み合
   g.phase = 'main';
   const other = (idx + 1) % 3;
   const me = g.players[idx], ot = g.players[other];
+  for (const p of [me, ot]) for (const k in p.resources) p.resources[k] = 0; // 準備でもらう資源は乱数なので空にする
   me.resources.lumber = 2; ot.resources.steel = 1;
   assert.equal(E.playerTrade(g, other, { lumber: 2 }, {}), false); // あげるだけは不可
   assert.equal(E.playerTrade(g, other, { lumber: 2 }, { lumber: 1 }), false); // 同じ物どうしは不可
