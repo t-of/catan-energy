@@ -199,6 +199,16 @@ export function discardFor(game, playerIdx, level) {
   return E.discardCards(game, playerIdx, obj);
 }
 
+// ---- 相手(CPU)との交易に応じるか: 来る量が出す量以上、かつ今ちょうど足りていない物が1つでも来るなら受ける ----
+export function acceptTrade(game, idx, give, get) {
+  const total = (o) => Object.values(o).reduce((a, b) => a + (b || 0), 0);
+  if (total(give) < total(get)) return false; // 出す(CPUが失う)方が多い一方的な交易は断る
+  const order = neededOrder(game, idx);
+  const short = order.slice(0, 2); // 今いちばん足りない2種
+  if (Object.keys(give).some((k) => (give[k] || 0) > 0 && short.includes(k))) return true;
+  return total(give) >= total(get);
+}
+
 // ---- 他人が選ぶ場面（pendingChoices）。答えられなければ読み飛ばす ----
 function resolvePendingChoice(game, choice) {
   const { player, kind } = choice;

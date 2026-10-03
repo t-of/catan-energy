@@ -806,6 +806,33 @@ export function bankTrade(game, playerIdx, giveKind, wantKind) {
   return true;
 }
 
+// ---- 相手との交易（資源・科学・エネルギーを自由に組み合わせ。あげるだけ・同じ物どうしは不可。3.9） ----
+const TRADE_KINDS = [...RESOURCES, 'science', 'energy'];
+function handOf(p, kind) { return kind === 'science' ? p.science : kind === 'energy' ? p.energy : (p.resources[kind] || 0); }
+function addTo(p, kind, n) { if (kind === 'science') p.science += n; else if (kind === 'energy') p.energy += n; else p.resources[kind] += n; }
+export function playerTrade(game, otherIdx, give, get) {
+  if (game.phase !== 'main') return false;
+  const idx = currentPlayer(game);
+  if (otherIdx === idx || otherIdx < 0 || otherIdx >= game.playerCount) return false;
+  const giveTotal = TRADE_KINDS.reduce((a, k) => a + (give[k] || 0), 0);
+  const getTotal = TRADE_KINDS.reduce((a, k) => a + (get[k] || 0), 0);
+  if (giveTotal <= 0 || getTotal <= 0) return false; // あげるだけは不可
+  if (TRADE_KINDS.some((k) => (give[k] || 0) > 0 && (get[k] || 0) > 0)) return false; // 同じ物どうしは不可
+  const me = game.players[idx], other = game.players[otherIdx];
+  if (TRADE_KINDS.some((k) => handOf(me, k) < (give[k] || 0))) return false;
+  if (TRADE_KINDS.some((k) => handOf(other, k) < (get[k] || 0))) return false;
+  if (handOf(me, 'energy') - (give.energy || 0) + (get.energy || 0) > ENERGY_MAX) return false;
+  if (handOf(other, 'energy') - (get.energy || 0) + (give.energy || 0) > ENERGY_MAX) return false;
+  TRADE_KINDS.forEach((k) => {
+    const g = give[k] || 0, w = get[k] || 0;
+    if (!g && !w) return;
+    addTo(me, k, w - g);
+    addTo(other, k, g - w);
+  });
+  fire(game, 'build');
+  return true;
+}
+
 // ================================================================
 // イベント（袋・茶/緑ディスク・7種の効果・同点の扱い・袋切れの終わり方）
 // ================================================================

@@ -177,6 +177,38 @@ test('港との交易: 3:1港は3枚、2:1港はその資源2枚で交換でき�
   assert.equal(E.bankTrade(g, idx, thirdKind, otherKind), false);
 });
 
+test('相手との交易: 資源・科学・エネルギーを自由に組み合わせ。あげるだけ・同じ物どうし・エネルギー超過は不可', () => {
+  const g = E.createGame(3, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  g.phase = 'main';
+  const other = (idx + 1) % 3;
+  const me = g.players[idx], ot = g.players[other];
+  me.resources.lumber = 2; ot.resources.steel = 1;
+  assert.equal(E.playerTrade(g, other, { lumber: 2 }, {}), false); // あげるだけは不可
+  assert.equal(E.playerTrade(g, other, { lumber: 2 }, { lumber: 1 }), false); // 同じ物どうしは不可
+  assert.ok(E.playerTrade(g, other, { lumber: 2 }, { steel: 1 }));
+  assert.equal(me.resources.lumber, 0);
+  assert.equal(me.resources.steel, 1);
+  assert.equal(ot.resources.steel, 0);
+  assert.equal(ot.resources.lumber, 2);
+  // エネルギーを含む交易。あげるものが無ければ不可。受け取って5を超えるなら不可
+  me.energy = 5; ot.energy = 1; me.resources.brick = 1;
+  assert.equal(E.playerTrade(g, other, {}, { energy: 1 }), false); // giveTotalが0
+  assert.equal(E.playerTrade(g, other, { brick: 1 }, { energy: 1 }), false); // me.energyが5で受け取ると超える
+  me.energy = 3;
+  assert.ok(E.playerTrade(g, other, { brick: 1 }, { energy: 1 }));
+  assert.equal(me.energy, 4);
+  assert.equal(ot.energy, 0);
+});
+
+test('CPU: 相手の交易の受け入れは、出すより来る方が多いか、足りない物が来るときに受ける', () => {
+  const g = E.createGame(3, Math.random);
+  g.players[0].resources.lumber = 0; g.players[0].resources.brick = 0; g.players[0].resources.fiber = 5; g.players[0].resources.food = 5; g.players[0].resources.steel = 5; g.players[0].science = 5;
+  assert.ok(C.acceptTrade(g, 0, { steel: 1 }, { lumber: 1 })); // CPUが足りないlumberをもらえるなら受ける
+  assert.equal(C.acceptTrade(g, 0, { steel: 1, food: 1 }, { lumber: 1 }), true);
+});
+
 test('勝利判定: 他人の手番中に10点になっても勝たず、本人の手番になってから勝つ', () => {
   const g = E.createGame(2, Math.random);
   playSetup(g);
