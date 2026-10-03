@@ -49,6 +49,8 @@ export const EVENT_LABEL = {
   prodIncrease: '生産増加', rain: '豪雨と洪水', funding: '政府の補助金', sustainable: '持続可能な生産',
 };
 export const EVENT_SPACES = { climate: 3, envPollution: 4, airPollution: 3, prodIncrease: 3, rain: 4, funding: 4, sustainable: 3 };
+// 発動したときの音の色分け用(climateは茶/緑両方のディスクがあるが、ここでは緑として扱う)
+const GREEN_EVENTS = new Set(['climate', 'funding', 'sustainable']);
 const BROWN_DISC_COUNTS = { climate: 9, envPollution: 8, airPollution: 9, prodIncrease: 9, rain: 8 }; // 袋の初期43枚
 const GREEN_UNMARKED_COUNTS = { climate: 3, sustainable: 12, funding: 12 }; // 27枚（3人用はこれだけ使う）
 const GREEN_4P_ONLY_COUNTS = { climate: 1, sustainable: 4, funding: 4 }; // 4人のときだけ足す9枚（合計36枚）
@@ -318,24 +320,26 @@ function hexBlocked(game, hexId) { return hexId === game.inspectorHex || hexHasH
 export function placeHazardOnHex(game, hexId) {
   if (hexId === game.inspectorHex || hexHasHazard(game, hexId) || !canPlaceHazard(game)) return false;
   game.hazards.hexes.push(hexId);
-  fire(game, 'hazard');
+  fire(game, 'hazardPlace');
   return true;
 }
 export function placeHazardOnVertex(game, vertexId) {
   const v = game.board.vertices[vertexId];
   if (!v.building || vertexHasHazard(game, vertexId) || !canPlaceHazard(game)) return false;
   game.hazards.vertices.push(vertexId);
-  fire(game, 'hazard');
+  fire(game, 'hazardPlace');
   return true;
 }
 // 出目の地形にあるハザードは外れ、その地形（監査官がいないもの）に接する町・都市のハザードも外れる（7では呼ばない）
 function clearHazardsForRoll(game, total) {
+  const before = hazardCount(game);
   game.board.hexes.forEach((hex) => {
     if (hex.number !== total) return;
     game.hazards.hexes = game.hazards.hexes.filter((h) => h !== hex.id);
     if (hex.id === game.inspectorHex) return; // 監査官が止めた地形に接する建物のハザードは外れない
     game.hazards.vertices = game.hazards.vertices.filter((v) => !hex.vertexIds.includes(v));
   });
+  if (hazardCount(game) < before) fire(game, 'hazardClear');
 }
 export function useEnergyToClearHazard(game, playerIdx, target) {
   if (game.phase !== 'main' || playerIdx !== currentPlayer(game)) return false;
@@ -351,7 +355,7 @@ export function useEnergyToClearHazard(game, playerIdx, target) {
   }
   if (!cleared) return false;
   p.energy -= ENERGY_DEMOLISH_COST;
-  fire(game, 'hazard');
+  fire(game, 'hazardClear');
   return true;
 }
 
@@ -503,12 +507,14 @@ function distributeResources(game, total) {
       game.bank.science -= scienceDemand;
     }
   }
+  let anyEnergyGained = false;
   Object.entries(energyGains).forEach(([pid, n]) => {
     const pl = game.players[pid];
     const before = pl.energy;
     pl.energy = Math.min(ENERGY_MAX, pl.energy + n);
-    if (pl.energy > before) fire(game, 'energy');
+    if (pl.energy > before) anyEnergyGained = true;
   });
+  if (anyEnergyGained) fire(game, 'energy'); // 何人分でも1回だけ鳴らす
 }
 // 出目で産出するタイルの id（盤の演出用）
 export function hitHexIds(game, total) {
@@ -718,7 +724,7 @@ export function buildPlant(game, vertexId, hexId, kind) {
   game.board.plants.push({ owner: idx, kind, vertexId, hexId });
   game.plantBuiltThisTurn = true;
   if (kind === 'renewable' && p.greenDiscs.length) game.bag.push(p.greenDiscs.pop()); // 下にあった緑ディスク1枚を袋へ
-  fire(game, 'build');
+  fire(game, kind === 'renewable' ? 'buildRenewable' : 'buildFossil');
   return true;
 }
 
@@ -940,7 +946,7 @@ export function drawEventDisc(game, rng = Math.random) {
     triggered = true;
     game.tracks[type] = 0; // 発動したらそのイベントのディスクは全部取り除く(マスは空に戻る)
     log(game, `${EVENT_LABEL[type]}が発動`);
-    fire(game, 'eventTriggered');
+    fire(game, GREEN_EVENTS.has(type) ? 'eventTriggeredGreen' : 'eventTriggeredBrown');
     resolveEventEffect(game, type, rng);
   }
   if (game.pendingChoices.length === 0 && game.drawsLeft === 0) game.phase = 'roll';
@@ -1131,7 +1137,7 @@ export function playCleanupRemoveHazard(game, target, victimIdx) {
   stealFromHand(game, victimIdx, idx);
   p.cleanupPlayed = (p.cleanupPlayed || 0) + 1;
   game.devCardPlayedThisTurn = true;
-  fire(game, 'hazard');
+  fire(game, 'hazardClear');
   recalcCleanest(game);
   return true;
 }

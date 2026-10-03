@@ -58,13 +58,17 @@ function beep(freq, dur) {
 const SOUND = {
   dice: () => beep(340, 0.12),
   build: () => beep(520, 0.1),
-  hazard: () => beep(260, 0.16),
+  buildFossil: () => beep(440, 0.1),
+  buildRenewable: () => beep(600, 0.1),
+  hazardPlace: () => beep(200, 0.14),
+  hazardClear: () => beep(680, 0.05),
   energy: () => beep(760, 0.05),
   drawDisc: () => beep(300, 0.05),
-  eventTriggered: () => { beep(420, 0.1); setTimeout(() => beep(540, 0.12), 90); },
+  eventTriggeredBrown: () => { beep(380, 0.1); setTimeout(() => beep(280, 0.12), 90); },
+  eventTriggeredGreen: () => { beep(520, 0.08); setTimeout(() => beep(700, 0.12), 90); },
   rob: () => beep(220, 0.2),
   win: () => { beep(660, 0.15); setTimeout(() => beep(880, 0.25), 140); },
-  loseAll: () => beep(160, 0.3),
+  loseAll: () => { beep(160, 0.3); beep(200, 0.3); },
   shortage: () => beep(180, 0.08),
 };
 
@@ -348,6 +352,12 @@ cpuSpeedBtn.addEventListener('click', () => {
   save('cpuSpeed', cpuSpeed);
   showCpuSpeed();
 });
+// 遊び方ダイアログ(30秒でわかる短い説明)
+const helpDialog = document.getElementById('helpDialog');
+document.getElementById('helpBtn').addEventListener('click', () => helpDialog.showModal());
+document.getElementById('helpCloseBtn').addEventListener('click', () => helpDialog.close());
+helpDialog.addEventListener('click', (e) => { if (e.target === helpDialog) helpDialog.close(); });
+
 let cpuTimer = null;
 // 今、CPUが何か答えるべきか(人の番なら false)
 function nextIsCpu() {

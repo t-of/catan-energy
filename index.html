@@ -43,9 +43,21 @@
         <button class="btn btn--small" data-wak="install" hidden>アプリにする</button>
         <button class="btn btn--small" id="motionBtn" aria-pressed="true">動き オン</button>
         <button class="btn btn--small" id="cpuSpeedBtn">CPU ふつう</button>
+        <button class="btn btn--small" id="helpBtn">遊び方</button>
         <button class="btn btn--small" data-wak="share">共有</button>
       </div>
     </header>
+
+    <dialog class="help-dialog" id="helpDialog">
+      <h2>30秒でわかる遊び方</h2>
+      <ul>
+        <li>3〜4人で1台の画面を回して遊ぶ、カタン基本セットに発電所を足したボードゲームです。</li>
+        <li>手番は「イベント（ディスクを引く）」→「サイコロ」→「道・町・都市・発電所を建てる、交易する」の順。</li>
+        <li>化石燃料発電所は安く、建てるほど汚染（LF・GF）が増えてディスクを多く引くようになります。再生可能発電所は高いぶん汚染を下げます。</li>
+        <li>自分の手番中に10点になれば勝ち。袋のディスクが尽きたら、再生可能発電所が化石燃料発電所より多い人だけが勝てます。</li>
+      </ul>
+      <button type="button" class="btn btn--accent" id="helpCloseBtn">わかった</button>
+    </dialog>
 
     <!-- 人数選び -->
     <section class="setup" id="setupPanel">

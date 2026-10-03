@@ -88,6 +88,21 @@ button { font: inherit; color: inherit; }
 .panel__head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; font-size: 14px; font-weight: 700; margin-bottom: 10px; }
 .panel h2 { margin: 0 0 8px; font-family: var(--serif); font-size: 18px; font-weight: 700; color: var(--accent-hi); }
 
+/* ---- 遊び方ダイアログ ---- */
+.help-dialog {
+  background: var(--panel);
+  color: var(--fg);
+  border: 1px solid var(--panel-edge);
+  border-radius: 14px;
+  max-width: 420px;
+  width: min(92vw, 420px);
+  padding: 18px 20px;
+}
+.help-dialog::backdrop { background: rgba(0, 0, 0, 0.55); }
+.help-dialog h2 { margin: 0 0 10px; font-family: var(--serif); font-size: 18px; color: var(--accent-hi); }
+.help-dialog ul { margin: 0 0 16px; padding-left: 1.2em; display: flex; flex-direction: column; gap: 8px; font-size: 14px; line-height: 1.5; }
+.help-dialog .btn { width: 100%; }
+
 /* ---- 人数選び（タイトル） ---- */
 .setup {
   position: relative;
