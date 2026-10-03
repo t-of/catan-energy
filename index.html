@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0d1720">
+  <meta name="description" content="発電所と汚染を足したカタン風の陣取りボード。1台で交代して遊ぶ試作。">
+  <title>catan-energy — エネルギー版の陣取りボード</title>
+
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="catan-energy">
+  <meta property="og:title" content="catan-energy — エネルギー版の陣取りボード">
+  <meta property="og:description" content="発電所と汚染を足したカタン風の陣取りボード。1台で交代して遊ぶ試作。">
+  <meta property="og:url" content="https://t-of.github.io/catan-energy/">
+  <meta property="og:image" content="https://t-of.github.io/catan-energy/icons/og.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
+  <meta property="og:locale" content="ja_JP">
+  <meta name="twitter:card" content="summary_large_image">
+
+  <!-- apple-mobile-web-app-status-bar-style は付けない（black-translucent だと iOS 26 で上部が隠れる） -->
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="catan-energy">
+  <link rel="manifest" href="./manifest.webmanifest">
+  <link rel="icon" href="./icons/icon.svg" type="image/svg+xml">
+  <link rel="icon" type="image/png" sizes="32x32" href="./icons/favicon-32.png">
+  <link rel="apple-touch-icon" href="./icons/apple-touch-icon.png">
+
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,700&family=Zen+Kaku+Gothic+New:wght@400;500;700&display=swap" rel="stylesheet">
+
+  <link rel="stylesheet" href="./webapp-kit/webapp-kit.css">
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <main class="app">
+    <header class="bar">
+      <h1 class="bar__title">catan-energy</h1>
+      <div class="bar__actions">
+        <button class="btn btn--small" id="homeBtn" hidden>タイトルへ</button>
+        <button class="btn btn--small" data-wak="install" hidden>アプリにする</button>
+        <button class="btn btn--small" id="motionBtn" aria-pressed="true">動き オン</button>
+        <button class="btn btn--small" id="cpuSpeedBtn">CPU ふつう</button>
+        <button class="btn btn--small" data-wak="share">共有</button>
+      </div>
+    </header>
+
+    <!-- 人数選び -->
+    <section class="setup" id="setupPanel">
+      <div class="setup__sea"></div>
+      <div class="setup__board"><svg id="titleBoard" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg></div>
+      <div class="setup__logo">catan-energy</div>
+      <p class="setup__lead">発電所と汚染を足したエネルギー版。1台で交代して遊ぶ試作です（3〜4人・基本盤のみ）。</p>
+      <div class="panel setup__panel">
+        <div class="setup__row">
+          <span>人数</span>
+          <div class="segmented" id="playerCountPicker">
+            <button class="btn" data-count="3">3人</button>
+            <button class="btn" data-count="4">4人</button>
+          </div>
+        </div>
+        <div class="seats" id="seatsPanel"></div>
+        <button class="btn btn--accent btn--big" id="startBtn">はじめる</button>
+        <button class="btn" id="continueBtn" hidden>つづきから</button>
+      </div>
+    </section>
+
+    <!-- ゲーム画面 -->
+    <section class="game" id="gamePanel" hidden>
+      <aside class="side side--left">
+        <div class="side-head">
+          <div class="side-head__brand"><span class="side-head__logo">catan-energy</span><span class="side-head__tag">発電所と汚染</span></div>
+          <div class="side-head__turn">ターン <b id="turnNum">1</b></div>
+        </div>
+        <div class="players" id="playersBar"></div>
+        <div class="panel bank" id="bankPanel"></div>
+      </aside>
+
+      <div class="board-area">
+        <div class="stage" id="stage">
+          <svg id="board" viewBox="0 0 100 100" preserveAspectRatio="xMidYMid meet"></svg>
+          <div class="hint" id="hint"></div>
+          <div class="dice" id="diceBox"></div>
+        </div>
+        <div class="panel message" id="banner"></div>
+      </div>
+
+      <aside class="side side--right">
+        <div class="panel hand-panel">
+          <div class="panel__head"><span>手札</span><span id="handCount"></span></div>
+          <div class="hand" id="handBar"></div>
+        </div>
+        <div class="panel ck-panel" id="ckPanel" hidden></div>
+        <div class="panel ck-panel" id="soccerPanel" hidden></div>
+        <div class="panel builds-panel">
+          <div class="panel__head">建てる</div>
+          <div class="builds" id="buildGrid"></div>
+        </div>
+        <div class="actions" id="actionBar">
+          <button class="btn" id="diceBtn">サイコロ</button>
+          <button class="btn" id="tradeBtn">交易</button>
+          <button class="btn" id="devBtn">発展カード</button>
+          <button class="btn btn--accent btn--wide" id="endTurnBtn">手番を終える</button>
+        </div>
+      </aside>
+
+      <div class="overlay" id="panelOverlay" hidden>
+        <div class="panel sheet" id="panel"></div>
+      </div>
+    </section>
+
+    <footer class="credit">
+      <a href="/">T.OF...</a> のアプリ・<a href="https://t-of.github.io/contact/">問い合わせ</a>
+    </footer>
+  </main>
+
+  <script src="./webapp-kit/webapp-kit.js"></script>
+  <script type="module" src="./main.js"></script>
+</body>
+</html>
