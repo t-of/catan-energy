@@ -66,7 +66,8 @@ test('準備: 距離ルール、2周目は都市、都市のまわりの資源1�
       assert.equal(g.players[idx].science, scienceBefore + 1); // 科学は都市のまわりの地形数によらず1枚
     }
   }
-  assert.equal(g.phase, 'roll');
+  assert.equal(g.phase, 'event'); // セットアップのあとは手番の初めのイベントフェーズから
+  assert.equal(g.drawsLeft, E.drawsFor(g));
   assert.equal(g.turn, 0);
   g.players.forEach((p) => { assert.equal(p.towns.length, 1); assert.equal(p.cities.length, 1); assert.equal(p.roads.length, 2); });
 });
@@ -83,6 +84,7 @@ function fixedDiceRng(total) {
 test('産出: 町は資源1、都市は資源1＋科学1（資源2ではない）', () => {
   const g = E.createGame(4, Math.random);
   playSetup(g);
+  g.phase = 'roll'; // イベントフェーズは別のテストで見る
   const idx = E.currentPlayer(g);
   const p = g.players[idx];
   const cityVid = p.cities[0];
@@ -152,11 +154,12 @@ test('勝利判定: 他人の手番中に10点になっても勝たず、本人�
   assert.equal(idx0, 0);
   const anyEdge = E.availableRoadEdges(g, 0)[0];
   if (anyEdge != null) E.buildRoad(g, anyEdge, { free: true });
-  assert.equal(g.winner, null);
+  assert.equal(g.winners, null);
   // 0の手番を終えて1の手番になった瞬間に判定される
   E.endTurn(g);
   assert.equal(E.currentPlayer(g), 1);
-  assert.equal(g.winner, 1);
+  assert.deepEqual(g.winners, [1]);
+  assert.equal(g.endReason, 'vp');
   assert.equal(g.phase, 'gameOver');
 });
 
@@ -304,4 +307,283 @@ test('倉庫: 建てると7のときの捨て札の上限が8→11枚になる�
   const pending = g.pendingDiscards.find((d) => d.player === idx);
   assert.ok(pending);
   assert.equal(pending.count, 5); // 11枚の半分(切り捨て)
+});
+
+// ---- 作業3: イベント・終わり方・発展カード ----
+
+test('緑ディスク: 3人は27枚(9×3)、4人は36枚(9×4)を各自の再生可能発電所の下に配る', () => {
+  const g3 = E.createGame(3, Math.random);
+  assert.equal(g3.players.reduce((a, p) => a + p.greenDiscs.length, 0), 27);
+  g3.players.forEach((p) => assert.equal(p.greenDiscs.length, 9));
+  const g4 = E.createGame(4, Math.random);
+  assert.equal(g4.players.reduce((a, p) => a + p.greenDiscs.length, 0), 36);
+});
+
+test('イベント: 手番の初めのGFで引く枚数が決まり、途中でGFが変わっても変えない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  assert.equal(g.phase, 'event');
+  const initial = g.drawsLeft;
+  assert.equal(initial, E.drawsFor(g));
+  const idx = E.currentPlayer(g);
+  g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: -1, hexId: -900 }); // GFが動く操作をしても
+  assert.equal(g.drawsLeft, initial); // 保持した値は変わらない
+});
+
+test('イベント: マスが埋まると発動し、ディスクが消える(マスは空に戻る)', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.bag = ['funding', 'funding', 'funding', 'funding']; // 政府の補助金は4枚で発動(0章B)
+  g.drawsLeft = 4;
+  assert.equal(E.drawEventDisc(g), true);
+  assert.equal(E.drawEventDisc(g), true);
+  assert.equal(E.drawEventDisc(g), true);
+  assert.equal(g.tracks.funding, 3);
+  assert.equal(E.drawEventDisc(g), 'funding'); // 全員LFが同点なので何も起きないが、発動自体はする
+  assert.equal(g.tracks.funding, 0);
+  assert.equal(g.bag.length, 0);
+  assert.equal(g.phase, 'roll'); // drawsLeftも尽きている
+});
+
+test('イベント: 大気汚染はLFが一番高い人が都市にハザード', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = 2;
+  for (let k = 0; k < 2; k++) g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: -1, hexId: -200 - k });
+  g.bag = ['airPollution', 'airPollution', 'airPollution'];
+  g.drawsLeft = 3;
+  E.drawEventDisc(g); E.drawEventDisc(g);
+  assert.equal(E.drawEventDisc(g), 'airPollution');
+  assert.deepEqual(g.pendingChoices, [{ player: idx, kind: 'airPollutionHazard' }]);
+  const cityV = g.players[idx].cities[0];
+  assert.ok(E.resolveAirPollutionHazard(g, idx, cityV));
+  assert.equal(E.vertexHasHazard(g, cityV), true);
+  assert.equal(g.pendingChoices.length, 0);
+});
+
+test('イベント: 環境汚染は出目の地形にハザード(7は振り直し)。監査官の地形は除く', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const eightHexes = g.board.hexes.filter((h) => h.number === 8);
+  assert.ok(eightHexes.length >= 1);
+  g.inspectorHex = eightHexes[0].id; // 監査官を8の地形に置いておく
+  g.bag = ['envPollution', 'envPollution', 'envPollution', 'envPollution']; // 0章Bで4枚で発動
+  g.drawsLeft = 4;
+  E.drawEventDisc(g); E.drawEventDisc(g); E.drawEventDisc(g);
+  // 7,7,8の順に出るrng(fixedDiceRngと同じ作り方。6面サイコロ2個ぶんを順に消費する)
+  const seq = [5 / 6 + 1e-6, 0 + 1e-6, 5 / 6 + 1e-6, 0 + 1e-6, 3 / 6 + 1e-6, 3 / 6 + 1e-6];
+  let i = 0;
+  const rng = () => seq[(i++) % seq.length];
+  assert.equal(E.drawEventDisc(g, rng), 'envPollution');
+  assert.ok(!g.hazards.hexes.includes(eightHexes[0].id)); // 監査官のいる地形には置かない
+  if (eightHexes.length > 1) assert.ok(g.hazards.hexes.includes(eightHexes[1].id));
+});
+
+test('イベント: 生産増加はLFが一番高い人が化石燃料発電所を1つただで建てられ、1手番1つの制限に数えない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  for (let k = 0; k < 2; k++) g.board.plants.push({ owner: idx, kind: 'fossil', vertexId: -1, hexId: -300 - k }); // LFを一番高くする
+  g.phase = 'main';
+  p.science = 10;
+  const townV = p.towns[0];
+  const townHex = g.board.vertices[townV].hexIds.find((h) => g.board.hexes[h].number != null);
+  assert.ok(E.buildPlant(g, townV, townHex, 'renewable')); // 通常の1手番1つを使い切る
+  assert.equal(g.plantBuiltThisTurn, true);
+  g.phase = 'event';
+  g.bag = ['prodIncrease', 'prodIncrease', 'prodIncrease'];
+  g.drawsLeft = 3;
+  E.drawEventDisc(g); E.drawEventDisc(g);
+  assert.equal(E.drawEventDisc(g), 'prodIncrease');
+  assert.deepEqual(g.pendingChoices, [{ player: idx, kind: 'prodIncrease' }]);
+  const cityV = p.cities[0];
+  const cityHex = g.board.vertices[cityV].hexIds.find((h) => g.board.hexes[h].number != null);
+  const before = g.board.plants.length;
+  const resBefore = { ...p.resources };
+  assert.ok(E.resolveProdIncrease(g, idx, cityV, cityHex));
+  assert.equal(g.board.plants.length, before + 1);
+  const gained = Object.keys(resBefore).some((k) => p.resources[k] > resBefore[k]);
+  assert.ok(gained); // 建てた地形の資源を1枚もらう
+  assert.equal(g.plantBuiltThisTurn, true); // 通常の1手番1つの制限はそのまま(無料ぶんは数えていない)
+});
+
+test('イベント: 豪雨と洪水は全員が(手番の人から時計回りに)自分の町/都市にハザードを置く', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.bag = ['rain', 'rain', 'rain', 'rain'];
+  g.drawsLeft = 4;
+  E.drawEventDisc(g); E.drawEventDisc(g); E.drawEventDisc(g);
+  assert.equal(E.drawEventDisc(g), 'rain');
+  assert.deepEqual(g.pendingChoices.map((c) => c.player), [0, 1, 2, 3]);
+  g.pendingChoices.map((c) => c.player).slice().forEach((p) => {
+    assert.ok(E.resolveRainHazard(g, p, g.players[p].towns[0]));
+  });
+  assert.equal(g.pendingChoices.length, 0);
+});
+
+test('イベント: 気候会議は同点なら全員が時計回りに行う。全員同点なら何も起きない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  // 全員同点(LF3)のときは何も起きない
+  g.bag = ['climate', 'climate', 'climate'];
+  g.drawsLeft = 3;
+  E.drawEventDisc(g); E.drawEventDisc(g);
+  assert.equal(E.drawEventDisc(g), 'climate');
+  assert.equal(g.pendingChoices.length, 0);
+
+  // 0,1のLFを5に上げる(化石を2つずつ追加)。2,3はLF3のまま最低
+  [0, 1].forEach((i) => { for (let k = 0; k < 2; k++) g.board.plants.push({ owner: i, kind: 'fossil', vertexId: -1, hexId: -1000 - i * 10 - k }); });
+  g.phase = 'event';
+  g.drawsLeft = 3;
+  g.bag = ['climate', 'climate', 'climate'];
+  E.drawEventDisc(g); E.drawEventDisc(g); E.drawEventDisc(g);
+  const kinds = g.pendingChoices.map((c) => `${c.player}:${c.kind}`);
+  assert.deepEqual(kinds, ['2:climateGain', '3:climateGain', '0:climateDiscard', '1:climateDiscard']);
+  assert.ok(E.resolveClimateGain(g, 2, 'lumber'));
+  assert.ok(E.resolveClimateGain(g, 3, 'lumber'));
+  g.players[0].resources.lumber = 1;
+  assert.ok(E.resolveClimateDiscard(g, 0, 'lumber'));
+  g.players[1].resources.lumber = 1;
+  assert.ok(E.resolveClimateDiscard(g, 1, 'lumber'));
+  assert.equal(g.pendingChoices.length, 0);
+  assert.equal(g.phase, 'roll');
+});
+
+test('イベント: 政府の補助金はLFが一番低い人が発展カードを1枚もらう(選ぶ場面ではない)', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  [0, 1, 2].forEach((i) => g.board.plants.push({ owner: i, kind: 'fossil', vertexId: -1, hexId: -1100 - i }));
+  g.bag = ['funding', 'funding', 'funding', 'funding'];
+  g.drawsLeft = 4;
+  E.drawEventDisc(g); E.drawEventDisc(g); E.drawEventDisc(g);
+  const before = g.players[3].devCards.length;
+  assert.equal(E.drawEventDisc(g), 'funding');
+  assert.equal(g.players[3].devCards.length, before + 1);
+  assert.equal(g.pendingChoices.length, 0);
+});
+
+test('イベント: 持続可能な生産は再生可能発電所が一番多い人がもらう', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.board.plants.push({ owner: 1, kind: 'renewable', vertexId: -1, hexId: -1200 });
+  g.bag = ['sustainable', 'sustainable', 'sustainable'];
+  g.drawsLeft = 3;
+  E.drawEventDisc(g); E.drawEventDisc(g);
+  assert.equal(E.drawEventDisc(g), 'sustainable');
+  assert.deepEqual(g.pendingChoices, [{ player: 1, kind: 'sustainableGain' }]);
+  const before = g.players[1].resources.lumber;
+  assert.ok(E.resolveSustainableGain(g, 1, 'lumber'));
+  assert.equal(g.players[1].resources.lumber, before + 1);
+});
+
+test('袋切れ: 再生>化石の差が一番大きい人が勝つ。いなければ全員の負け(winnersが空)', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.board.plants.push({ owner: 0, kind: 'renewable', vertexId: -1, hexId: -1300 });
+  g.board.plants.push({ owner: 0, kind: 'renewable', vertexId: -1, hexId: -1301 });
+  g.board.plants.push({ owner: 1, kind: 'renewable', vertexId: -1, hexId: -1302 });
+  g.board.plants.push({ owner: 1, kind: 'fossil', vertexId: -1, hexId: -1303 });
+  g.bag = [];
+  g.drawsLeft = 1;
+  assert.equal(E.drawEventDisc(g), 'bagEmpty');
+  assert.equal(g.phase, 'gameOver');
+  assert.equal(g.endReason, 'bag');
+  assert.deepEqual(g.winners, [0]); // 0は差+2、1は差+1
+
+  const g2 = E.createGame(4, Math.random);
+  playSetup(g2);
+  g2.board.plants.push({ owner: 0, kind: 'fossil', vertexId: -1, hexId: -1400 });
+  g2.bag = [];
+  g2.drawsLeft = 1;
+  E.drawEventDisc(g2);
+  assert.deepEqual(g2.winners, []); // 誰も再生>化石でない
+});
+
+test('発展カード: 道路建設は道を2本ただで置ける。1手番1枚の制限にかかる', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  g.players[idx].devCards.push({ type: 'roadBuilding', boughtTurn: null });
+  assert.ok(E.playRoadBuildingCard(g));
+  assert.equal(g.freeRoadsRemaining, 2);
+  assert.ok(E.useFreeRoadFromCard(g, E.availableRoadEdges(g, idx)[0]));
+  assert.equal(g.freeRoadsRemaining, 1);
+  assert.ok(E.useFreeRoadFromCard(g, E.availableRoadEdges(g, idx)[0]));
+  assert.equal(g.freeRoadsRemaining, 0);
+  // 同じ手番にもう1枚は使えない
+  g.players[idx].devCards.push({ type: 'researchGrant', boughtTurn: null });
+  assert.equal(E.playResearchGrantCard(g, ['science', 'science']), false);
+});
+
+test('発展カード: 豊作は自分の再生可能発電所がある地形(別々)を選んだ分の資源をもらう', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  const hexIds = g.board.hexes.filter((h) => h.terrain !== 'desert').slice(0, 3).map((h) => h.id);
+  hexIds.forEach((hexId) => g.board.plants.push({ owner: idx, kind: 'renewable', vertexId: -1, hexId }));
+  p.devCards.push({ type: 'highYield', boughtTurn: null });
+  const totalBefore = E.RESOURCES.reduce((a, k) => a + p.resources[k], 0);
+  assert.ok(E.playHighYieldCard(g, hexIds));
+  const totalAfter = E.RESOURCES.reduce((a, k) => a + p.resources[k], 0);
+  assert.equal(totalAfter, totalBefore + hexIds.length);
+});
+
+test('発展カード: 研究補助金は資源・科学を好きに2枚', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  p.devCards.push({ type: 'researchGrant', boughtTurn: null });
+  const sciBefore = p.science;
+  assert.ok(E.playResearchGrantCard(g, ['science', 'science']));
+  assert.equal(p.science, sciBefore + 2);
+});
+
+test('発展カード: 手番の初めはイベントを引く前なら使える。引き始めたら使えない', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  assert.equal(g.phase, 'event');
+  const idx = E.currentPlayer(g);
+  g.players[idx].devCards.push({ type: 'researchGrant', boughtTurn: null });
+  assert.ok(E.playResearchGrantCard(g, ['science', 'science']));
+  assert.equal(g.devCardPlayedThisTurn, true);
+  g.bag = ['funding'];
+  g.drawsLeft = 1;
+  g.devCardPlayedThisTurn = false; // 次の確認のため、1手番1枚の制限だけ外す
+  E.drawEventDisc(g);
+  assert.equal(g.eventDrawStarted, true);
+  g.players[idx].devCards.push({ type: 'researchGrant', boughtTurn: null });
+  assert.equal(E.playResearchGrantCard(g, ['science', 'science']), false); // 引き始めたあとは使えない
+});
+
+test('発展カード: クリーンアップを3枚使うと最もクリーンな環境(2点)。もっと多く使った人に移る', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  g.phase = 'main';
+  const idx = E.currentPlayer(g);
+  const p = g.players[idx];
+  function playOneCleanup(playerIdx) {
+    const hex = g.board.hexes.find((h) => h.id !== g.inspectorHex);
+    g.hazards.hexes = g.hazards.hexes.filter((h) => h !== hex.id);
+    assert.ok(E.placeHazardOnHex(g, hex.id));
+    g.turn = playerIdx;
+    g.devCardPlayedThisTurn = false;
+    g.players[playerIdx].devCards.push({ type: 'cleanup', boughtTurn: null });
+    assert.ok(E.playCleanupRemoveHazard(g, { hexId: hex.id }, playerIdx)); // 自分以上=自分でもよい
+  }
+  const scoreBefore = E.playerScore(g, idx);
+  playOneCleanup(idx); assert.equal(p.cleanupPlayed, 1); assert.equal(g.cleanestPlayer, null);
+  playOneCleanup(idx); assert.equal(p.cleanupPlayed, 2); assert.equal(g.cleanestPlayer, null);
+  playOneCleanup(idx); assert.equal(p.cleanupPlayed, 3); assert.equal(g.cleanestPlayer, idx);
+  assert.equal(E.playerScore(g, idx), scoreBefore + 2); // 最もクリーンな環境の2点が足される
+
+  const other = (idx + 1) % 4;
+  for (let i = 0; i < 4; i++) playOneCleanup(other);
+  assert.equal(g.players[other].cleanupPlayed, 4);
+  assert.equal(g.cleanestPlayer, other); // 4枚 > 3枚で移る
 });

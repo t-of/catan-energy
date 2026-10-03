@@ -41,6 +41,17 @@ export const DRAW_TABLE = { // [下限, 上限, 引く枚数]（0章A）
 
 export const DEV_COUNTS = { roadBuilding: 2, highYield: 2, researchGrant: 2, vp: 5, cleanup: 14 }; // 合計25
 export const DEV_LABEL = { roadBuilding: '道路建設', highYield: '豊作', researchGrant: '研究補助金', vp: '勝利点', cleanup: 'クリーンアップ' };
+export const CLEANEST_THRESHOLD = 3; // クリーンアップを3枚使うと「最もクリーンな環境」(2点)
+
+// イベントの袋・マス（0章B・RB p.9〜10）
+export const EVENT_LABEL = {
+  climate: '気候会議', envPollution: '環境汚染', airPollution: '大気汚染',
+  prodIncrease: '生産増加', rain: '豪雨と洪水', funding: '政府の補助金', sustainable: '持続可能な生産',
+};
+export const EVENT_SPACES = { climate: 3, envPollution: 4, airPollution: 3, prodIncrease: 3, rain: 4, funding: 4, sustainable: 3 };
+const BROWN_DISC_COUNTS = { climate: 9, envPollution: 8, airPollution: 9, prodIncrease: 9, rain: 8 }; // 袋の初期43枚
+const GREEN_UNMARKED_COUNTS = { climate: 3, sustainable: 12, funding: 12 }; // 27枚（3人用はこれだけ使う）
+const GREEN_4P_ONLY_COUNTS = { climate: 1, sustainable: 4, funding: 4 }; // 4人のときだけ足す9枚（合計36枚）
 
 export const PLAYER_COLORS = ['#e0553f', '#3f7ee0', '#f0c43c', '#46a86a', '#8a5cc9', '#2bb0b0'];
 
@@ -193,6 +204,15 @@ function buildBoard(rng) {
 function buildDevDeck(rng) {
   return shuffle(Object.entries(DEV_COUNTS).flatMap(([t, n]) => Array(n).fill(t)), rng);
 }
+function buildEventBag(rng) {
+  return shuffle(Object.entries(BROWN_DISC_COUNTS).flatMap(([t, n]) => Array(n).fill(t)), rng);
+}
+// 再生可能発電所の下に伏せて配る緑ディスク（1人9枚）。3人は4人用印の9枚を抜いた27枚、4人は36枚から配る
+function buildGreenPool(playerCount, rng) {
+  const counts = { ...GREEN_UNMARKED_COUNTS };
+  if (playerCount === 4) Object.entries(GREEN_4P_ONLY_COUNTS).forEach(([t, n]) => { counts[t] += n; });
+  return shuffle(Object.entries(counts).flatMap(([t, n]) => Array(n).fill(t)), rng);
+}
 
 // ================================================================
 // ゲームの状態
@@ -200,6 +220,7 @@ function buildDevDeck(rng) {
 export function createGame(playerCount, rng = Math.random, options = {}) {
   const board = buildBoard(rng);
   const names = options.names || [];
+  const greenPool = buildGreenPool(playerCount, rng);
   const players = Array.from({ length: playerCount }, (_, i) => ({
     idx: i,
     name: names[i] || `プレイヤー${i + 1}`,
@@ -208,7 +229,9 @@ export function createGame(playerCount, rng = Math.random, options = {}) {
     science: 0,
     energy: 0,
     warehouse: false,
-    devCards: [], // { type, boughtTurn }
+    devCards: [], // { type, boughtTurn }（イベントでもらった分は boughtTurn: null）
+    cleanupPlayed: 0, // クリーンアップカードを使った枚数（最もクリーンな環境の判定）
+    greenDiscs: greenPool.slice(i * 9, i * 9 + 9), // 自分の再生可能発電所の下に伏せた9枚（建てるたび1枚ずつ袋へ）
     roads: [], towns: [], cities: [],
     roadLength: 0,
   }));
@@ -224,7 +247,7 @@ export function createGame(playerCount, rng = Math.random, options = {}) {
       science: SCIENCE_START,
       devDeck: buildDevDeck(rng),
     },
-    phase: 'setupTown', // setupTown → setupCity → roll → discard → moveInspector → main → gameOver
+    phase: 'setupTown', // setupTown → setupCity → event → roll → discard → moveInspector → main → gameOver
     setupOrder,
     setupIndex: 0,
     setupPending: 'building', // 'building' | 'road'
@@ -235,11 +258,19 @@ export function createGame(playerCount, rng = Math.random, options = {}) {
     devCardPlayedThisTurn: false,
     plantBuiltThisTurn: false, // 化石+再生で1手番1つ（イベントで建てる分は数えない）
     demolishedThisTurn: false, // 化石を壊すのは1手番1回
+    freeRoadsRemaining: 0, // 道路建設カードぶんの、ただで置ける道の残り数
     inspectorHex: board.inspectorHex,
     hazards: { hexes: [], vertices: [] }, // 地形id・交点idの配列。在庫は HAZARD_SUPPLY
     pendingDiscards: [], // [{ player, count }]
+    bag: buildEventBag(rng), // 残りの茶のディスク（種類名の配列）。再生可能発電所を建てるたびに緑ディスクが足される
+    tracks: { climate: 0, envPollution: 0, airPollution: 0, prodIncrease: 0, rain: 0, funding: 0, sustainable: 0 }, // マスに置いた数
+    drawsLeft: 0, // この手番にあと何枚引くか（手番の初めのGFで決め、途中で変えない）
+    eventDrawStarted: false, // 1枚でも引いたら、その手番は発展カードをもう使えない
+    pendingChoices: [], // [{ player, kind }] 他人が選ぶ場面の順番待ち。先頭から解決する
     longestRoadPlayer: null,
-    winner: null,
+    cleanestPlayer: null,
+    winners: null, // 終わったら配列（空＝全員の負け）
+    endReason: null, // 'vp' | 'bag'
     events: [], // 音・演出のきっかけ。main.js が読んで clear する
     log: [],
   };
@@ -270,6 +301,12 @@ export function drawsFor(game) {
   const table = DRAW_TABLE[game.playerCount] || DRAW_TABLE[4];
   const row = table.find(([lo, hi]) => gf >= lo && gf <= hi) || table[table.length - 1];
   return row[2];
+}
+// 手番の初め: イベントフェーズに入り、その手番に引く枚数をGFで決めて保持する（途中でGFが変わっても変えない）
+function startEventPhase(game) {
+  game.phase = 'event';
+  game.drawsLeft = drawsFor(game);
+  game.eventDrawStarted = false;
 }
 
 // ---- ハザード（町・都市・地形に1つまで。監査官のいる地形には置けない） ----
@@ -322,13 +359,22 @@ export function useEnergyToClearHazard(game, playerIdx, target) {
 export function devVpCount(player) { return player.devCards.filter((c) => c.type === 'vp').length; }
 export function playerScore(game, idx) {
   const p = game.players[idx];
-  return p.towns.length + p.cities.length * 2 + (game.longestRoadPlayer === idx ? 2 : 0) + devVpCount(p);
+  return p.towns.length + p.cities.length * 2
+    + (game.longestRoadPlayer === idx ? 2 : 0)
+    + (game.cleanestPlayer === idx ? 2 : 0)
+    + devVpCount(p);
 }
 // 自分の手番中にだけ判定する（他人の手番中に10点に届いても、その人の手番が来るまで勝ちにならない）
 function checkWin(game, idx) {
-  if (game.winner != null) return;
+  if (game.winners != null) return;
   if (idx !== currentPlayer(game)) return;
-  if (playerScore(game, idx) >= 10) { game.winner = idx; game.phase = 'gameOver'; fire(game, 'win'); log(game, `${playerName(game, idx)}の勝ち！`); }
+  if (playerScore(game, idx) >= 10) {
+    game.winners = [idx];
+    game.endReason = 'vp';
+    game.phase = 'gameOver';
+    fire(game, 'win');
+    log(game, `${playerName(game, idx)}の勝ち！`);
+  }
 }
 
 // ---- 建てられる場所 ----
@@ -397,8 +443,8 @@ export function setupPlaceRoad(game, edgeId) {
       game.setupOrder = game.setupOrder.slice().reverse();
       game.setupIndex = 0;
     } else {
-      game.phase = 'roll'; // セットアップが終わったら、最初のプレイヤー（1周目を始めた人）から通常手番
-      game.turn = 0;
+      game.turn = 0; // セットアップが終わったら、最初のプレイヤー（1周目を始めた人）から通常手番
+      startEventPhase(game);
     }
   }
   game.setupPending = 'building';
@@ -671,6 +717,7 @@ export function buildPlant(game, vertexId, hexId, kind) {
   game.bank.science += cost.science;
   game.board.plants.push({ owner: idx, kind, vertexId, hexId });
   game.plantBuiltThisTurn = true;
+  if (kind === 'renewable' && p.greenDiscs.length) game.bag.push(p.greenDiscs.pop()); // 下にあった緑ディスク1枚を袋へ
   fire(game, 'build');
   return true;
 }
@@ -746,15 +793,319 @@ export function bankTrade(game, playerIdx, giveKind, wantKind) {
   return true;
 }
 
+// ================================================================
+// イベント（袋・茶/緑ディスク・7種の効果・同点の扱い・袋切れの終わり方）
+// ================================================================
+// 対象の値が全員同じなら何も起きない。そうでなければ最大/最小の人（複数なら全員）を、手番の人から時計回りの順で返す
+function tiedGroupClockwise(game, values, mode) {
+  if (new Set(values).size === 1) return [];
+  const target = mode === 'max' ? Math.max(...values) : Math.min(...values);
+  const start = currentPlayer(game);
+  const order = [];
+  for (let i = 0; i < game.playerCount; i++) {
+    const idx = (start + i) % game.playerCount;
+    if (values[idx] === target) order.push(idx);
+  }
+  return order;
+}
+function allPlayersClockwise(game) {
+  const start = currentPlayer(game);
+  return Array.from({ length: game.playerCount }, (_, i) => (start + i) % game.playerCount);
+}
+function grantChoiceCard(game, playerIdx, kind) {
+  if (kind !== 'science' && !RESOURCES.includes(kind)) return false;
+  const bankHas = kind === 'science' ? game.bank.science : game.bank.resources[kind];
+  if ((bankHas || 0) < 1) return false;
+  if (kind === 'science') { game.bank.science--; game.players[playerIdx].science++; }
+  else { game.bank.resources[kind]--; game.players[playerIdx].resources[kind]++; }
+  return true;
+}
+function discardChoiceCard(game, playerIdx, kind) {
+  const p = game.players[playerIdx];
+  if (kind === 'science') { if (p.science < 1) return false; p.science--; game.bank.science++; return true; }
+  if (!RESOURCES.includes(kind) || (p.resources[kind] || 0) < 1) return false;
+  p.resources[kind]--; game.bank.resources[kind]++;
+  return true;
+}
+// 発電所を1手番1つの制限に数えずに建てる（生産増加イベント専用）
+function canPlaceFreeFossilPlant(game, playerIdx, vertexId, hexId) {
+  const v = game.board.vertices[vertexId];
+  if (!v.building || v.building.owner !== playerIdx) return false;
+  const hex = game.board.hexes[hexId];
+  if (!hex || hex.number == null || !v.hexIds.includes(hexId)) return false;
+  const existing = plantsOnVertex(game, vertexId);
+  if (existing.some((p) => p.hexId === hexId)) return false;
+  const limit = v.building.type === 'city' ? 3 : 1;
+  if (existing.length >= limit) return false;
+  return plantsOwnedCount(game, playerIdx, 'fossil') < MAX_FOSSIL;
+}
+
+function resolveEventEffect(game, type, rng) {
+  const lfs = game.players.map((_, i) => localFootprint(game, i));
+  if (type === 'airPollution') {
+    tiedGroupClockwise(game, lfs, 'max').forEach((p) => game.pendingChoices.push({ player: p, kind: 'airPollutionHazard' }));
+  } else if (type === 'envPollution') {
+    let total;
+    do { total = 2 + Math.floor(rng() * 6) + Math.floor(rng() * 6); } while (total === 7); // 7なら振り直し
+    game.board.hexes.forEach((hex) => { if (hex.number === total) placeHazardOnHex(game, hex.id); }); // 監査官の地形には置けない(placeHazardOnHexが見る)
+    log(game, `環境汚染: ${total}の地形にハザード`);
+  } else if (type === 'prodIncrease') {
+    tiedGroupClockwise(game, lfs, 'max').forEach((p) => game.pendingChoices.push({ player: p, kind: 'prodIncrease' }));
+  } else if (type === 'rain') {
+    allPlayersClockwise(game).forEach((p) => game.pendingChoices.push({ player: p, kind: 'rainHazard' }));
+  } else if (type === 'climate') {
+    tiedGroupClockwise(game, lfs, 'min').forEach((p) => game.pendingChoices.push({ player: p, kind: 'climateGain' }));
+    tiedGroupClockwise(game, lfs, 'max').forEach((p) => game.pendingChoices.push({ player: p, kind: 'climateDiscard' }));
+  } else if (type === 'funding') {
+    tiedGroupClockwise(game, lfs, 'min').forEach((p) => {
+      if (!game.bank.devDeck.length) return;
+      const cardType = game.bank.devDeck.pop();
+      game.players[p].devCards.push({ type: cardType, boughtTurn: null }); // もらったカード(買ってはいない)
+    });
+  } else if (type === 'sustainable') {
+    const renewCounts = game.players.map((_, i) => plantsOwnedCount(game, i, 'renewable'));
+    tiedGroupClockwise(game, renewCounts, 'max').forEach((p) => game.pendingChoices.push({ player: p, kind: 'sustainableGain' }));
+  }
+}
+
+// 袋が空で引かなければならないときの終わり方（再生>化石の人のうち差が最大の人。いなければ winners は空）
+function endGameByEmptyBag(game) {
+  const diffs = game.players.map((_, i) => plantsOwnedCount(game, i, 'renewable') - plantsOwnedCount(game, i, 'fossil'));
+  const positive = diffs.map((d, i) => ({ i, d })).filter((x) => x.d > 0);
+  let winners = [];
+  if (positive.length) {
+    const maxDiff = Math.max(...positive.map((x) => x.d));
+    const top = positive.filter((x) => x.d === maxDiff);
+    const maxScore = Math.max(...top.map((x) => playerScore(game, x.i)));
+    winners = top.filter((x) => playerScore(game, x.i) === maxScore).map((x) => x.i);
+  }
+  game.winners = winners;
+  game.endReason = 'bag';
+  game.phase = 'gameOver';
+  fire(game, winners.length ? 'win' : 'loseAll');
+  log(game, winners.length ? `袋が尽き、${winners.map((i) => playerName(game, i)).join('・')}の勝ち` : '袋が尽き、全員の負け');
+}
+
+// 引くたびに1枚解決してから次を引く（マスが埋まれば発動）。発動後にpendingChoicesが残れば、それを解決するまで次を引けない
+export function drawEventDisc(game, rng = Math.random) {
+  if (game.phase !== 'event' || game.pendingChoices.length || game.drawsLeft <= 0) return false;
+  if (!game.bag.length) { endGameByEmptyBag(game); return 'bagEmpty'; }
+  const type = game.bag.pop();
+  game.drawsLeft--;
+  game.eventDrawStarted = true;
+  game.tracks[type]++;
+  fire(game, 'drawDisc');
+  let triggered = false;
+  if (game.tracks[type] >= EVENT_SPACES[type]) {
+    triggered = true;
+    game.tracks[type] = 0; // 発動したらそのイベントのディスクは全部取り除く(マスは空に戻る)
+    log(game, `${EVENT_LABEL[type]}が発動`);
+    fire(game, 'eventTriggered');
+    resolveEventEffect(game, type, rng);
+  }
+  if (game.pendingChoices.length === 0 && game.drawsLeft === 0) game.phase = 'roll';
+  return triggered ? type : true;
+}
+
+function frontChoice(game, playerIdx, kind) {
+  const c = game.pendingChoices[0];
+  return (c && c.player === playerIdx && c.kind === kind) ? c : null;
+}
+function finishChoice(game) {
+  game.pendingChoices.shift();
+  if (game.phase === 'event' && game.pendingChoices.length === 0 && game.drawsLeft === 0) game.phase = 'roll';
+}
+export function pendingChoice(game) { return game.pendingChoices[0] || null; } // 画面・CPUが見る、今答えるべき場面
+
+// 他人が選ぶ場面に答えられない(在庫切れ・場所がないなど)ときに読み飛ばす
+export function skipPendingChoice(game, playerIdx) {
+  const c = game.pendingChoices[0];
+  if (!c || c.player !== playerIdx) return false;
+  finishChoice(game);
+  return true;
+}
+export function resolveAirPollutionHazard(game, playerIdx, vertexId) {
+  if (!frontChoice(game, playerIdx, 'airPollutionHazard')) return false;
+  const v = game.board.vertices[vertexId];
+  if (!v.building || v.building.owner !== playerIdx) return false;
+  const p = game.players[playerIdx];
+  const hasOpenCity = p.cities.some((cv) => !vertexHasHazard(game, cv));
+  if (hasOpenCity && v.building.type !== 'city') return false; // 都市がまだ空いているなら町には置けない
+  if (!placeHazardOnVertex(game, vertexId)) return false;
+  finishChoice(game);
+  return true;
+}
+export function resolveRainHazard(game, playerIdx, vertexId) {
+  if (!frontChoice(game, playerIdx, 'rainHazard')) return false;
+  const v = game.board.vertices[vertexId];
+  if (!v.building || v.building.owner !== playerIdx) return false;
+  if (!placeHazardOnVertex(game, vertexId)) return false;
+  finishChoice(game);
+  return true;
+}
+export function resolveProdIncrease(game, playerIdx, vertexId, hexId) {
+  if (!frontChoice(game, playerIdx, 'prodIncrease')) return false;
+  if (!canPlaceFreeFossilPlant(game, playerIdx, vertexId, hexId)) return false;
+  game.board.plants.push({ owner: playerIdx, kind: 'fossil', vertexId, hexId });
+  const hex = game.board.hexes[hexId];
+  const res = TERRAIN_RESOURCE[hex.terrain];
+  if (res && game.bank.resources[res] > 0) { game.players[playerIdx].resources[res]++; game.bank.resources[res]--; }
+  fire(game, 'build');
+  finishChoice(game);
+  return true;
+}
+export function resolveClimateGain(game, playerIdx, kind) {
+  if (!frontChoice(game, playerIdx, 'climateGain')) return false;
+  if (!grantChoiceCard(game, playerIdx, kind)) return false;
+  finishChoice(game);
+  return true;
+}
+export function resolveClimateDiscard(game, playerIdx, kind) {
+  if (!frontChoice(game, playerIdx, 'climateDiscard')) return false;
+  if (!discardChoiceCard(game, playerIdx, kind)) return false;
+  finishChoice(game);
+  return true;
+}
+export function resolveSustainableGain(game, playerIdx, kind) {
+  if (!frontChoice(game, playerIdx, 'sustainableGain')) return false;
+  if (!grantChoiceCard(game, playerIdx, kind)) return false;
+  finishChoice(game);
+  return true;
+}
+
+// ---- 最もクリーンな環境（クリーンアップ3枚で2点。もっと多く使った人に移る） ----
+function recalcCleanest(game) {
+  const counts = game.players.map((p) => p.cleanupPlayed || 0);
+  assignBonus(game, counts, CLEANEST_THRESHOLD, 'cleanestPlayer');
+  checkWin(game, currentPlayer(game));
+}
+
+// ---- 発展カード（道路建設・豊作・研究補助金・勝利点・クリーンアップ） ----
+// 勝利点は使う操作がなく、devVpCount/playerScoreが常に数える(RB: 手番中に10点に届けば明かして勝ち)
+function canPlayDevCardNow(game) {
+  if (game.devCardPlayedThisTurn) return false;
+  if (game.phase === 'event') return !game.eventDrawStarted; // 引く前ならよい
+  return game.phase === 'main';
+}
+function takeDevCard(game, playerIdx, type) {
+  const p = game.players[playerIdx];
+  const i = p.devCards.findIndex((c) => c.type === type && c.boughtTurn !== game.turnNumber);
+  if (i < 0) return -1;
+  return i;
+}
+export function playRoadBuildingCard(game) {
+  const idx = currentPlayer(game);
+  if (!canPlayDevCardNow(game)) return false;
+  const p = game.players[idx];
+  const i = takeDevCard(game, idx, 'roadBuilding');
+  if (i < 0) return false;
+  p.devCards.splice(i, 1);
+  game.freeRoadsRemaining += 2;
+  game.devCardPlayedThisTurn = true;
+  fire(game, 'build');
+  return true;
+}
+// 道路建設カードぶんの、ただで置ける道（buildRoadの{free:true}と違い、カードの残り枚数を消費する）
+export function useFreeRoadFromCard(game, edgeId) {
+  if (game.freeRoadsRemaining <= 0) return false;
+  const idx = currentPlayer(game);
+  const p = game.players[idx];
+  if (p.roads.length >= MAX_ROADS) return false;
+  if (!canPlaceRoad(game, edgeId, idx)) return false;
+  game.board.edges[edgeId].road = idx;
+  p.roads.push(edgeId);
+  game.freeRoadsRemaining--;
+  fire(game, 'build');
+  recalcLongestRoad(game);
+  checkWin(game, idx);
+  return true;
+}
+// 豊作: 自分の再生可能発電所がある地形(別々)を3つまで選び、それぞれの資源を1枚ずつ
+export function playHighYieldCard(game, hexIds) {
+  const idx = currentPlayer(game);
+  if (!canPlayDevCardNow(game)) return false;
+  const uniq = [...new Set(hexIds || [])];
+  if (!uniq.length || uniq.length > 3) return false;
+  const ownsHex = (hexId) => game.board.plants.some((pl) => pl.owner === idx && pl.kind === 'renewable' && pl.hexId === hexId);
+  if (!uniq.every(ownsHex)) return false;
+  const p = game.players[idx];
+  const i = takeDevCard(game, idx, 'highYield');
+  if (i < 0) return false;
+  p.devCards.splice(i, 1);
+  uniq.forEach((hexId) => {
+    const hex = game.board.hexes[hexId];
+    const res = TERRAIN_RESOURCE[hex.terrain];
+    if (res && game.bank.resources[res] > 0) { p.resources[res]++; game.bank.resources[res]--; }
+  });
+  game.devCardPlayedThisTurn = true;
+  fire(game, 'build');
+  return true;
+}
+// 研究補助金: 資源・科学を好きに2枚(組み合わせ自由)
+export function playResearchGrantCard(game, picks) {
+  const idx = currentPlayer(game);
+  if (!canPlayDevCardNow(game)) return false;
+  if (!Array.isArray(picks) || picks.length !== 2) return false;
+  if (!picks.every((k) => k === 'science' || RESOURCES.includes(k))) return false;
+  const p = game.players[idx];
+  const i = takeDevCard(game, idx, 'researchGrant');
+  if (i < 0) return false;
+  p.devCards.splice(i, 1);
+  picks.forEach((k) => grantChoiceCard(game, idx, k)); // 銀行の札が足りないぶんは諦める(基本カタンと同じ扱い)
+  game.devCardPlayedThisTurn = true;
+  fire(game, 'build');
+  return true;
+}
+// クリーンアップ: 監査官を動かす(7と同じ)か、ハザードを1つ外してLFが自分以上の人から1枚もらう
+export function playCleanupMoveInspector(game, hexId, targetPlayerIdx) {
+  const idx = currentPlayer(game);
+  if (!canPlayDevCardNow(game)) return false;
+  if (hexId === game.inspectorHex) return false;
+  const targets = inspectorTargets(game, hexId, idx);
+  if (targets.length && !targets.includes(targetPlayerIdx)) return false;
+  const p = game.players[idx];
+  const i = takeDevCard(game, idx, 'cleanup');
+  if (i < 0) return false;
+  p.devCards.splice(i, 1);
+  game.inspectorHex = hexId;
+  if (targets.length) stealFromHand(game, targetPlayerIdx, idx);
+  p.cleanupPlayed = (p.cleanupPlayed || 0) + 1;
+  game.devCardPlayedThisTurn = true;
+  fire(game, 'rob');
+  recalcCleanest(game);
+  return true;
+}
+export function playCleanupRemoveHazard(game, target, victimIdx) {
+  const idx = currentPlayer(game);
+  if (!canPlayDevCardNow(game)) return false;
+  if (localFootprint(game, victimIdx) < localFootprint(game, idx)) return false;
+  const clearsHex = target && target.hexId != null && hexHasHazard(game, target.hexId);
+  const clearsVertex = !clearsHex && target && target.vertexId != null && vertexHasHazard(game, target.vertexId);
+  if (!clearsHex && !clearsVertex) return false;
+  const p = game.players[idx];
+  const i = takeDevCard(game, idx, 'cleanup');
+  if (i < 0) return false;
+  p.devCards.splice(i, 1);
+  if (clearsHex) game.hazards.hexes = game.hazards.hexes.filter((h) => h !== target.hexId);
+  else game.hazards.vertices = game.hazards.vertices.filter((v) => v !== target.vertexId);
+  stealFromHand(game, victimIdx, idx);
+  p.cleanupPlayed = (p.cleanupPlayed || 0) + 1;
+  game.devCardPlayedThisTurn = true;
+  fire(game, 'hazard');
+  recalcCleanest(game);
+  return true;
+}
+
 // ---- 手番の終わり ----
 export function endTurn(game) {
   if (game.phase !== 'main') return false;
   game.turn = (game.turn + 1) % game.playerCount;
   game.turnNumber++;
-  game.phase = 'roll';
   game.devCardPlayedThisTurn = false;
   game.plantBuiltThisTurn = false;
   game.demolishedThisTurn = false;
+  game.freeRoadsRemaining = 0;
+  startEventPhase(game);
   checkWin(game, game.turn); // 手番の初めの判定
   return true;
 }
