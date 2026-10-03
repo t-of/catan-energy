@@ -775,13 +775,26 @@ export function buyDevCard(game) {
   return true;
 }
 
-// ---- 銀行との交易（資源4:1、科学3:1。港は作業5の画面で使うときに足す） ----
+// ---- 港のレート（町・都市のある交点の port を見る。3:1 港は全資源、2:1 港はその資源だけ。科学・エネルギーは対象外） ----
+export function tradeRate(game, playerIdx, giveKind) {
+  if (giveKind === 'science') return 3; // 港は資源だけ（3.9）。科学は銀行の 3:1 のまま
+  const p = game.players[playerIdx];
+  let rate = 4;
+  for (const vid of [...p.towns, ...p.cities]) {
+    const port = game.board.vertices[vid].port;
+    if (port === '3:1' && rate > 3) rate = 3;
+    if (port === giveKind) rate = 2;
+  }
+  return rate;
+}
+
+// ---- 銀行・港との交易（資源4:1、科学3:1、港は3:1/2:1。tradeRate が港を見て一番良いレートを返す） ----
 export function bankTrade(game, playerIdx, giveKind, wantKind) {
   if (game.phase !== 'main' || playerIdx !== currentPlayer(game)) return false;
   if (giveKind === wantKind) return false;
   if (giveKind !== 'science' && !RESOURCES.includes(giveKind)) return false;
   if (wantKind !== 'science' && !RESOURCES.includes(wantKind)) return false;
-  const rate = giveKind === 'science' ? 3 : 4;
+  const rate = tradeRate(game, playerIdx, giveKind);
   const p = game.players[playerIdx];
   const have = giveKind === 'science' ? p.science : p.resources[giveKind];
   if ((have || 0) < rate) return false;

@@ -140,6 +140,43 @@ test('銀行交易: 科学3→資源1', () => {
   assert.equal(g.bank.resources.steel, bankBefore - 1);
 });
 
+test('港との交易: 3:1港は3枚、2:1港はその資源2枚で交換できる', () => {
+  const g = E.createGame(4, Math.random);
+  playSetup(g);
+  const idx = E.currentPlayer(g);
+  g.phase = 'main';
+  const p = g.players[idx];
+  p.towns = []; p.cities = [];
+  g.board.vertices.forEach((v) => { if (v.building && v.building.owner === idx) v.building = null; });
+
+  const threeOne = g.board.vertices.find((v) => v.port === '3:1');
+  threeOne.building = { type: 'town', owner: idx };
+  p.towns.push(threeOne.id);
+  assert.equal(E.tradeRate(g, idx, 'lumber'), 3);
+  p.resources.lumber = 3;
+  const bankBrickBefore = g.bank.resources.brick;
+  assert.ok(E.bankTrade(g, idx, 'lumber', 'brick'));
+  assert.equal(p.resources.lumber, 0);
+  assert.equal(g.bank.resources.brick, bankBrickBefore - 1);
+
+  const twoOne = g.board.vertices.find((v) => E.RESOURCES.includes(v.port));
+  p.towns = [twoOne.id];
+  threeOne.building = null;
+  twoOne.building = { type: 'town', owner: idx };
+  const kind = twoOne.port;
+  assert.equal(E.tradeRate(g, idx, kind), 2);
+  p.resources[kind] = 2;
+  const otherKind = E.RESOURCES.find((r) => r !== kind);
+  const bankOtherBefore = g.bank.resources[otherKind];
+  assert.ok(E.bankTrade(g, idx, kind, otherKind));
+  assert.equal(p.resources[kind], 0);
+  assert.equal(g.bank.resources[otherKind], bankOtherBefore - 1);
+  // その港は自分の資源だけ。別の資源は2枚あっても4:1のまま
+  const thirdKind = E.RESOURCES.find((r) => r !== kind && r !== otherKind);
+  p.resources[thirdKind] = 2;
+  assert.equal(E.bankTrade(g, idx, thirdKind, otherKind), false);
+});
+
 test('勝利判定: 他人の手番中に10点になっても勝たず、本人の手番になってから勝つ', () => {
   const g = E.createGame(2, Math.random);
   playSetup(g);
@@ -634,6 +671,35 @@ test('CPU: 3人・4人、強さいろいろで何局も最後まで進み、vp�
   }
   assert.equal(games, 16);
   console.log(`  CPUだけ${games}局: vp終了${counts.vp}・bag終了${counts.bag}、平均${Math.round(totalTurns / games)}手番`);
+});
+
+test('CPU: ふつう・つよいの4人対局は町・都市がよく建ち、終局時の最高点が伸びる', () => {
+  // よわいを混ぜず、ふつう・つよいだけで数十局まわす（作業4のテストはよわいも混ざって点が低く出るため別に見る）
+  const levelSets = [
+    () => 'normal', () => 'strong',
+    (i) => ['normal', 'strong', 'normal', 'strong'][i % 4],
+    (i) => ['strong', 'normal', 'strong'][i % 3],
+  ];
+  const counts = { vp: 0, bag: 0 };
+  let totalTurns = 0, games = 0, maxScoreSum = 0;
+  // CPUの手・サイコロはMath.randomも使うので同じseedでも結果が揺れる。vp終了は数%しか出ないので、
+  // たまたま0局になって落ちない程度まで局数を増やす(pc3,4合わせて120局。全体は1秒もかからない)
+  for (let pc = 3; pc <= 4; pc++) {
+    for (let s = 0; s < 60; s++) {
+      const levelFor = levelSets[s % levelSets.length];
+      const { g } = playOneCpuGame(pc, levelFor, pc * 2000 + s);
+      assert.equal(g.phase, 'gameOver');
+      counts[g.endReason]++;
+      totalTurns += g.turnNumber;
+      maxScoreSum += Math.max(...g.players.map((_, i) => E.playerScore(g, i)));
+      games++;
+    }
+  }
+  const avgMaxScore = maxScoreSum / games;
+  console.log(`  ふつう/つよい${games}局: vp終了${counts.vp}・bag終了${counts.bag}、平均${Math.round(totalTurns / games)}手番、終局時の最高点の平均${avgMaxScore.toFixed(2)}`);
+  assert.ok(counts.vp > 0, 'vpで終わる対局が一局も無い');
+  // 直す前は全員3点のまま(平均3)で止まっていた。6台後半まで伸びれば明らかな改善とみなす(seedにより6.5〜7台で揺れる)
+  assert.ok(avgMaxScore >= 6, `終局時の最高点の平均が低い(${avgMaxScore.toFixed(2)})`);
 });
 
 test('CPU: つよいはよわいに勝ち越す', () => {

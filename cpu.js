@@ -92,12 +92,12 @@ function ownHazardTargets(game, idx) {
   return out;
 }
 
-// ---- 銀行との交易（資源4:1・科学3:1。成立する組だけを挙げる） ----
+// ---- 銀行・港との交易（E.tradeRate が港を見てレートを返す。成立する組だけを挙げる） ----
 function anyBankTrades(game, idx) {
   const p = game.players[idx];
   const out = [];
   [...E.RESOURCES, 'science'].forEach((give) => {
-    const rate = give === 'science' ? 3 : 4;
+    const rate = E.tradeRate(game, idx, give);
     const have = give === 'science' ? (p.science || 0) : (p.resources[give] || 0);
     if (have < rate) return;
     [...E.RESOURCES, 'science'].forEach((want) => {
@@ -123,15 +123,25 @@ function tryHelpfulBankTrade(game, idx) {
   const missing = Object.entries(cost).filter(([r, n]) => (p.resources[r] || 0) < n).map(([r]) => r);
   if (!missing.length) return false;
   const want = missing[0];
-  for (const give of [...E.RESOURCES, 'science']) {
+  // 科学は都市・再生可能発電所のために残す（町・都市・道を建てるためだけには使わない）
+  for (const give of E.RESOURCES) {
     if (give === want) continue;
-    const rate = give === 'science' ? 3 : 4;
-    const have = give === 'science' ? (p.science || 0) : (p.resources[give] || 0);
-    const spare = have - (cost[give] || 0);
+    const rate = E.tradeRate(game, idx, give);
+    const spare = (p.resources[give] || 0) - (cost[give] || 0);
     const bankHas = want === 'science' ? game.bank.science : game.bank.resources[want];
     if (spare >= rate && bankHas > 0 && E.bankTrade(game, idx, give, want)) return true;
   }
   return false;
+}
+// 次に建てたい物に足りない資源を、エネルギー2→1でも補う
+function tryHelpfulEnergyTrade(game, idx) {
+  const p = game.players[idx];
+  if ((p.energy || 0) < E.ENERGY_TRADE_COST) return false;
+  const cost = pickTargetCost(game, idx);
+  if (!cost) return false;
+  const missing = Object.keys(cost).find((r) => (p.resources[r] || 0) < cost[r]);
+  if (!missing) return false;
+  return E.useEnergyForResource(game, idx, missing);
 }
 
 // ---- セットアップ（町/都市1つ＋道1本を2周） ----
@@ -307,6 +317,7 @@ function greedyMainStep(game, idx, level) {
   // ほとんどの対局は袋切れ(再生>化石の人が勝つ)で終わるので、つよいは最初から再生可能を優先する
   const bagLow = level === 'strong' && game.bag.length <= 10; // 残りがさらに減ったら化石を壊してでも追いつく
 
+  // 町・都市・道を最優先（点に直結し、そこから発電所の置き場所も増える）
   if (p.cities.length < E.MAX_CITIES && p.towns.length && affordable(p.resources, E.COSTS.city)) {
     const best = p.towns.slice().sort((a, b) => vertexValue(game, b) - vertexValue(game, a))[0];
     if (E.buildCity(game, best)) return true;
@@ -316,17 +327,25 @@ function greedyMainStep(game, idx, level) {
     const best = townVs.slice().sort((a, b) => vertexValue(game, b) - vertexValue(game, a))[0];
     if (E.buildTown(game, best)) return true;
   }
+  const edges = E.availableRoadEdges(game, idx).filter((e) => affordable(p.resources, E.COSTS.road));
+  if (p.roads.length < E.MAX_ROADS && edges.length) {
+    const best = edges.map((e) => ({ e, s: roadValue(game, e) })).sort((a, b) => b.s - a.s)[0];
+    if (best.s >= 0 && E.buildRoad(game, best.e)) return true;
+  }
+  // 町・都市・道に足りない資源は、港・銀行・科学3:1・エネルギー2:1で補ってから次の手番を待つ
+  if (tryHelpfulBankTrade(game, idx)) return true;
+  if (tryHelpfulEnergyTrade(game, idx)) return true;
   if (!game.plantBuiltThisTurn) {
-    for (const kind of (level === 'strong' ? ['renewable', 'fossil'] : ['fossil', 'renewable'])) {
+    // 化石は再生可能より多く建てすぎない（GFが上がりすぎて自分も損をする）。再生可能はいつでも歓迎
+    const fossilCount = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'fossil').length;
+    const renewCount = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'renewable').length;
+    const order = (level === 'strong' || fossilCount >= renewCount) ? ['renewable', 'fossil'] : ['fossil', 'renewable'];
+    for (const kind of order) {
+      if (kind === 'fossil' && fossilCount > renewCount) continue;
       if (!canAffordScience(p, E.PLANT_COSTS[kind])) continue;
       const spot = findPlantSpot(game, idx, kind);
       if (spot && E.buildPlant(game, spot.vertexId, spot.hexId, kind)) return true;
     }
-  }
-  const edges = E.availableRoadEdges(game, idx).filter((e) => affordable(p.resources, E.COSTS.road));
-  if (p.roads.length < E.MAX_ROADS && edges.length) {
-    const best = edges.map((e) => ({ e, s: roadValue(game, e) })).sort((a, b) => b.s - a.s)[0];
-    if (best.s > 0 && E.buildRoad(game, best.e)) return true;
   }
   if (bagLow && !game.demolishedThisTurn && (p.energy || 0) >= E.ENERGY_DEMOLISH_COST) {
     const renew = game.board.plants.filter((pl) => pl.owner === idx && pl.kind === 'renewable').length;
