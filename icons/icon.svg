@@ -1,1 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><rect width="512" height="512" rx="112" fill="#2c6e3f"/><text x="256" y="256" dy=".35em" text-anchor="middle" font-family="system-ui,sans-serif" font-weight="700" font-size="280" fill="#eceef3">C</text></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <clipPath id="hex">
+      <polygon points="406,270 331,399.9 181,399.9 106,270 181,140.1 331,140.1"/>
+    </clipPath>
+  </defs>
+
+  <rect width="512" height="512" fill="#0f1320"/>
+
+  <!-- 発電所の島タイル：左は化石燃料（煙）、右は再生可能（太陽） -->
+  <g clip-path="url(#hex)">
+    <rect x="80" y="100" width="176" height="340" fill="#4a3a2a"/>
+    <rect x="256" y="100" width="176" height="340" fill="#2c6e3f"/>
+  </g>
+  <polygon points="406,270 331,399.9 181,399.9 106,270 181,140.1 331,140.1"
+    fill="none" stroke="#1a140a" stroke-width="10" stroke-linejoin="round"/>
+
+  <!-- 煙突と汚染の煙 -->
+  <rect x="166" y="210" width="40" height="92" rx="4" fill="#6b7280"/>
+  <circle cx="186" cy="188" r="16" fill="#2a2a2e" opacity="0.85"/>
+  <circle cx="206" cy="160" r="21" fill="#2a2a2e" opacity="0.6"/>
+  <circle cx="190" cy="126" r="26" fill="#2a2a2e" opacity="0.4"/>
+
+  <!-- 太陽（再生可能エネルギー） -->
+  <circle cx="330" cy="255" r="34" fill="#e0a53f"/>
+  <g stroke="#e0a53f" stroke-width="8" stroke-linecap="round">
+    <line x1="330" y1="195" x2="330" y2="177"/>
+    <line x1="383" y1="221" x2="398" y2="212"/>
+    <line x1="383" y1="289" x2="398" y2="298"/>
+  </g>
+</svg>
